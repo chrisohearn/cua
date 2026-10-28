@@ -56,7 +56,8 @@ jobs:
   rust:
     name: rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # Cold macOS compilation needs time for both lint and the complete test suite.
+    timeout-minutes: ${{ matrix.os == 'macos-26' && 90 || 60 }}
     strategy:
       fail-fast: false
       matrix:
