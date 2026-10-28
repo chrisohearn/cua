@@ -67,7 +67,7 @@ Host: Linux x86_64, Omarchy kernel `7.2.8-10-omarchy`, Hyprland session. Availab
 | Windows native behavior | Canonical runner mapped | Interactive Windows environment or hosted canonical lane |
 | Linux X11 and Wayland | Lightweight local readiness only | Disposable canonical and compositor-specific lanes |
 | Concurrency, bounded stress, interruption and recovery | Not yet exercised | Reproducible workload per critical workflow |
-| Security and isolation | Read-only contract mapping | Safe local adversarial proof; private disclosure if needed |
+| Security and isolation | Read-only auth and Keyvault trust-boundary mapping on actual main1769 | Private deduplication and safe hermetic proof; private disclosure if validated |
 | Final fresh adversarial search | Not started | Fresh assessment after coverage pass |
 
 ## Candidates and accepted findings
@@ -125,7 +125,7 @@ Root qualified authentic upstream ledger04b4d55db669bd856942869eba3841932d852034
 
 ## Environment limits and correction history
 
-No local heavy command, queued build or host-resource reservation is held. The brief PR7 merge/main-proof admission is released at its actual completion boundary; read-only source workers need no mutation lease. Every actual END callback for21752 was delivered to parent/14f/395. Admission is explicitly released before CI/model waits; QA remains sole-coordinator owned and user edits are preserved.
+No local heavy command, queued build or host-resource reservation is held. The brief PR7 merge/main-proof admission expired after the completed merge/proof before this continuation performed its release readback; that readback returned `LOST` rather than `RELEASED`. There is no live lease. The corrected chronology is retained here and in private evidence. Read-only source workers need no mutation lease. Every actual END callback for21752 was delivered to parent/14f/395. QA remains sole-coordinator owned and user edits are preserved.
 
 Earlier quota failures, terminated migration9327, actual successful disk continuation95869, canonical-docs long-socket failure and corrected short private TMP continuation remain preserved in logs/workpad. Migration9327 never completed; only confirmed inactive owned disposable outputs were removed. Initial nightly setup used the user Rustup prefix before the private-prefix correction; root default1.99 and SDK pin1.97.1 remain unchanged. No shared toolchain/cache was deleted and no pressure error is counted as a product finding.
 
@@ -170,4 +170,6 @@ All prior seven file hashes except the two new geometry paths remain bound. Fres
 
 As of2026-10-28T10:40Z, issue6 is completed and closed; main1769/tree3672 is verified. All older pending PR7 statements below earlier continuation headings are historical and superseded by the issue6 section above. PR9d043 source reviews are clean; current workflow set has14 distinct pull_request workflows (one metadata edited-event duplicate), with no observed failure at the first complete readback and six lanes still pending. Original8b retry2 results are preserved: all29docs blocks passed, one geometry failure; repeated AppKit missingcapture_id. No third unchanged retry occurred. Current correction proof is not a native/Lume claim.
 
-Two new source-only auth and Keyvault discovery packages are running at frozen actualmain1769/tree3672, declaration142bae4cfcea152cee52736aa78475a3c49dab00af9d5bcf82d159ec75813847. Both have empty write ownership, no Git/execution/network/account/native authority; exact exposed modelgpt-6.1-sol, ultra/default. Root stops mapping those assigned source boundaries until return. Findings remain unaccepted. All earlier children completed.
+Two source-only auth and Keyvault discovery packages completed at frozen actualmain1769/tree3672 under declaration142bae4cfcea152cee52736aa78475a3c49dab00af9d5bcf82d159ec75813847. Both had empty write ownership and performed no Git, execution, network, account or native action. Authentication mapping retained two credential-lifecycle leads; Keyvault mapping retained five potentially security-sensitive authorization, delivery-ledger and storage-consistency leads. They remain private, deduplication and deterministic hermetic proof are pending, and no runtime result, severity, issue or count is admitted. All delegated children are complete.
+
+Tracker #2 was refreshed after independent issue #6 readback: accepted2, merged/verified1. Issue #6 is independently confirmed `closed` with reason `completed` at2026-10-28T10:40:15Z. PR7 monitoring is off. PR9d043 Code and Security are clean while required CI remains pending; PR4 issue3 remains the only accepted repair not yet landed.
