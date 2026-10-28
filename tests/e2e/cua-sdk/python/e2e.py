@@ -537,14 +537,22 @@ async def window_origin(env: "cua.SpacesdClient", title: str) -> tuple[int, int]
         'n=$(xwininfo -id "$wid" | awk "/Absolute upper-left X/{x=\\$4} /Absolute upper-left Y/{y=\\$4} END{print x, y}"); '
         '[ "$n" = "$o" ] && break; o=$n; done; echo "$n"'
     )
-    out = await poll(
+    async def origin():
+        out = await env.sh(f"desktop-env bash -c '{script}'", 20_000)
+        if not out.exit.success:
+            return None
+        try:
+            x, y = out.stdout.decode().split()
+            return int(x), int(y)
+        except (UnicodeError, ValueError):
+            return None
+
+    return await poll(
         f"window {title!r}",
-        lambda: env.sh(f"desktop-env bash -c '{script}'", 20_000),
+        origin,
         attempts=30,
         delay=1,
     )
-    x, y = out.stdout.decode().split()
-    return int(x), int(y)
 
 
 async def desktop_checks(env: "cua.SpacesdClient") -> dict:
