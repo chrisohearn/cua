@@ -311,8 +311,9 @@ export function renderEvidence(source: SourceFacts): string {
 
 /** One entry of `libs/images/sandbox-images.json`, the image list the apps and docs share. */
 export type SandboxImage = {
+  /** A `ghcr.io/trycua` tag; a CI fixture (`ci` group) is pinned by digest instead. */
   ref: string;
-  group: 'canonical' | 'benchmark' | 'distro';
+  group: 'canonical' | 'benchmark' | 'distro' | 'ci';
   os: 'linux' | 'windows' | 'macos';
   name: string;
   /** The guest's distribution: its id picks the apps' OS icon, its name is
@@ -347,7 +348,7 @@ export type Benchmark = { name: string; what: string; tasks: number; guide: stri
 
 export type SandboxImageList = {
   schemaVersion: 1;
-  /** `picker: false` keeps a group out of pickers and the image tables (benchmark images). */
+  /** `picker: false` keeps a group out of pickers and the image tables (benchmark images, CI fixtures). */
   groups: Array<{ id: SandboxImage['group']; label: string; picker?: boolean }>;
   images: SandboxImage[];
 };
@@ -382,6 +383,10 @@ export function validateImageList(value: unknown, source: SourceFacts): SandboxI
     throw new Error(`${IMAGE_LIST_PATH}: expected schemaVersion 1 with groups and images`);
   }
   const groups = new Set(root.groups.map((g) => g.id));
+  // CI fixtures are pinned for a workflow, never offered.
+  if (root.groups.some((g) => g.id === 'ci' && g.picker !== false)) {
+    throw new Error(`${IMAGE_LIST_PATH}: the ci group must set picker: false`);
+  }
   const seen = new Set<string>();
   for (const image of root.images) {
     const record = image as unknown as Record<string, unknown>;
@@ -391,7 +396,14 @@ export function validateImageList(value: unknown, source: SourceFacts): SandboxI
     if (keys.join() !== [...IMAGE_FIELDS].sort().join()) {
       throw new Error(`${IMAGE_LIST_PATH}: ${String(record.ref)} has fields ${keys.join(', ')}`);
     }
-    if (!/^ghcr\.io\/trycua\/[a-z0-9-]+:[A-Za-z0-9._-]+$/.test(image.ref)) {
+    if (image.group === 'ci') {
+      if (!/^ghcr\.io\/trycua\/[a-z0-9-]+@sha256:[0-9a-f]{64}$/.test(image.ref)) {
+        throw new Error(`${IMAGE_LIST_PATH}: CI fixture ${image.ref} must be a ghcr.io/trycua digest ref`);
+      }
+      if (image.published !== false) {
+        throw new Error(`${IMAGE_LIST_PATH}: CI fixture ${image.ref} must not be published`);
+      }
+    } else if (!/^ghcr\.io\/trycua\/[a-z0-9-]+:[A-Za-z0-9._-]+$/.test(image.ref)) {
       throw new Error(`${IMAGE_LIST_PATH}: ${image.ref} is not a ghcr.io/trycua tag`);
     }
     if (seen.has(image.ref)) throw new Error(`${IMAGE_LIST_PATH}: duplicate ${image.ref}`);
