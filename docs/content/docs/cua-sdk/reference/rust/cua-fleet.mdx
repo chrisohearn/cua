@@ -242,6 +242,7 @@ impl FleetClient {
   async fn claim(&self, pool: &Pool, options: ClaimOptions) -> Result<(Claim, bool)>;
   async fn wait_claim(&self, claim: &Claim) -> Result<BoundSandbox>;
   async fn acquire(&self, pool: &Pool, options: ClaimOptions) -> Result<BoundSandbox>;
+  async fn acquire_with_created(&self, pool: &Pool, options: ClaimOptions) -> Result<(BoundSandbox, bool)>;
   async fn attach_claim(&self, namespace: &str, name: &str) -> Result<BoundSandbox>;
   async fn claim_image(&self, namespace: &str, name: &str) -> Result<Option<(String, RuntimeKind)>>;
   async fn release(&self, namespace: &str, name: &str) -> Result<()>;
