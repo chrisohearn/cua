@@ -6,7 +6,7 @@ This sprint is in progress. Two P1 findings are admitted. Issue #6 completed its
 
 - Repository: `chrisohearn/cua`, verified remote `https://github.com/chrisohearn/cua`.
 - Target: `main`.
-- Starting target SHA: `7cc4bd0bfc3ce1a3246ae47fe02948dc9f64f010`. Latest fetched target SHA: `1769c2ece0dadd0618c9f86920d43a62f765ed26`, tree `3672ec69d59d72039d0eec829c1a81cf92c993f9`. It contains the verified PR #7 repair. Separate peer PR #1/#5 work is excluded from sprint counts.
+- Starting target SHA: `7cc4bd0bfc3ce1a3246ae47fe02948dc9f64f010`. Latest fetched target SHA: `519d0e535fa75f508fd575939bb018f6d8286e5a`, tree `465dee9d9ad522e3aac9c6bc8368b965f7c243d6`. It contains the verified PR #7 repair and merged noncounting PR #9 prerequisites. Separate peer PR #1/#5 work is excluded from sprint counts.
 - Start: 2026-10-28 04:02 UTC.
 - Coordinator: `mcp:2af09de7-b4a2-4a2d-81f4-e7552ba16143`.
 - Tracker: https://github.com/chrisohearn/cua/issues/2.
@@ -25,7 +25,7 @@ Trust boundaries include the host versus sandbox, client versus in-guest daemon,
 
 Installed repo-excellence-sprint, chris-mode, revotech-engineering, revotech-tools, and revotech-github sources were read from `/home/cohearn/.codex/skills/`. Repository AGENTS, contribution, maintainer, security, RFC, CODEOWNERS, development, and test rules govern the work. Project memory is absent at the root. This report is coordinator-owned.
 
-The Ponytail root owns independent simplicity work and releases admission at atomic handoffs. Its PR #1 merged67804e9 and PR #5 merged20a60e0e with exact reviewed/tested full-tree equality; their source reservations are released and neither counts here. It retains the11 PR #8 paths atb2987619f (original tested6135 stays frozen). This root retains PR #4's five paths and PR #9's nine-path aggregate prerequisite; shared Chromium changes reuse the peer's original commit through explicit handoff. PR #7's two source paths are now merged; its own detached worktree at actualmain1769 is retained for proof and read-only auth/Keyvault discovery. This coordinator is the sole QA-report writer. Portfolio parent owns maintenance/contribution gates.
+The Ponytail root owns independent simplicity work and releases admission at atomic handoffs. Its PR #1 merged67804e9 and PR #5 merged20a60e0e with exact reviewed/tested full-tree equality; their source reservations are released and neither counts here. It retains the11 PR #8 paths atb2987619f (original tested6135 stays frozen). This root retains PR #4's five paths. PR #9's nine-path aggregate prerequisite is merged; its shared Chromium changes reuse the peer's original commit through explicit handoff. PR #7's two source paths are also merged; its own detached worktree at actualmain519d is retained for proof and read-only auth/Keyvault discovery. This coordinator is the sole QA-report writer. Portfolio parent owns maintenance/contribution gates.
 
 The fork initially had `has_issues=false`. Enabling only Issues was completed and native readback confirmed `has_issues=true`. The portfolio coordinator explicitly authorized enabling only Issues as the reversible prerequisite for the mandatory lifecycle. Visibility, access, protections, Actions permissions, billing, releases, and other settings remain outside that setup action.
 
@@ -95,13 +95,13 @@ PR #7 is merged and issue #6 is closed after main proof; accepted2, merged/verif
 
 ### Issue #3 / PR #4
 
-Ready PR https://github.com/chrisohearn/cua/pull/4 is published at `101c14e61304c5758a1ce09159d0e85b177916a0`, tree `415b43e2e20bd23a44b941f95f2fa9a529a735e6`. Branch `fix/3-preserve-fleet-sandbox`, isolated `runtime/cua/worktree-3`. It preserves Fleet acquisition provenance, borrowed claims/state and credentials while retaining new-claim cleanup and Local protection. The regression covers both managed and explicit pools, failed readiness, unchanged saved state, zero DELETEs and successful credential reuse. Existing owners retain new-claim and Local cleanup coverage.
+Ready PR https://github.com/chrisohearn/cua/pull/4 is published at `16e78fc2e5536f7feccbd1f8ae008ddc4c4a5e30`, tree `2df587b5f45210969586da212694d90f70ac5edf`. Branch `fix/3-preserve-fleet-sandbox`, isolated `runtime/cua/worktree-3`. It now merges verified main519d after PR #9. Native readback reports open, ready and mergeable with exactly five changed files. Each of those five files is byte-identical to the previously proven exact101 head. It preserves Fleet acquisition provenance, borrowed claims/state and credentials while retaining new-claim cleanup and Local protection. The regression covers both managed and explicit pools, failed readiness, unchanged saved state, zero DELETEs and successful credential reuse. Existing owners retain new-claim and Local cleanup coverage.
 
 Original command12252 ended0 on runtime head `c26514862227e3a3308a25864610cf5c364ace88`: focused regression, affected whole crates (253 reported pass), scoped Clippy and format passed. Opt-in live rows return early; they are not E2E. Hosted Code/Security completed clean on c265. CI then found introduced generated Fleet-reference drift. Same issue correction1 canonically regenerated the missing declaration. Original24039 ended0, generated/check passed, and only the reserved MDX changed. Runtime/CI/test hashes stayed identical, preserving their proof.
 
-Exact101 Security completed clean; exact101 Code still reports running at the latest native readback. Original observers48041/50123 ended5 at local watchdogs with failover=false. Pending is neither provider failure nor permission to duplicate the reviewer. PR4's four pre-existing external-link failures are shared prerequisites now owned by PR9.
+Exact101 Security completed clean; its historical Code review remained running without a finding. Original observers48041/50123 ended5 at local watchdogs with failover=false. PR4's four pre-existing external-link failures were resolved through merged PR #9. Fresh exact16e Code/Security and all applicable CI are required after the main integration; historical reviews are evidence only.
 
-Local worktree3 also contains unpushed `b0fc15e4a546f567be8ed95ff8ad20d7a44fc374`, tree `63332c62b83f9ba69ee808a50a5f9f1add30e829`, containing only the four source permalinks beyond101. It is retained as issue3 correction2 preparation; it was not pushed across the running101 review. Its original patch was separately cherry-picked into PR9. No reset, successor or count is created.
+Local worktree3 formerly contained unpushed `b0fc15e4a546f567be8ed95ff8ad20d7a44fc374`, tree `63332c62b83f9ba69ee808a50a5f9f1add30e829`, containing only the four source permalinks beyond101. Its original patch shipped through PR #9. Merging verified main519d into the existing PR #4 branch removed those duplicate paths from the relative diff without rewriting history; no reset, successor or count was created.
 
 ### Issue #6 / PR #7
 
@@ -117,7 +117,7 @@ Issue #6 closed completed at10:40:15Z after that proof. One distinct P1 counts. 
 
 ### Shared prerequisite / PR #9 (noncounting)
 
-Ready https://github.com/chrisohearn/cua/pull/9 now has head `d0431be7d6c8ffee713ad8ceff0fc17c225aba25`, tree `183f91dd241b157bfdbb624283a241b655f00d05`, title `fix(ci): restore image and documentation test prerequisites`, nine paths. It retains original four immutable source links, peer Chromium two-pin commitb298 with provenance, upstream AppKit5665 bootstrap backport and strict window-origin polling repair. The latter two address actual required-CI failures; no new finding/count is created. Bounded(machineStandard) preserves existing source/runner/permission boundaries. Exactd043 Code completed10:25:26 and Security10:26:39 clean with no findings; full current-head CI remains in progress, including image/container/AppKit lanes. Native watch9 remains active. No prerequisite merge is claimed.
+https://github.com/chrisohearn/cua/pull/9 merged reviewed head `d0431be7d6c8ffee713ad8ceff0fc17c225aba25`, tree `183f91dd241b157bfdbb624283a241b655f00d05`, as main `519d0e535fa75f508fd575939bb018f6d8286e5a`, tree `465dee9d9ad522e3aac9c6bc8368b965f7c243d6`. It retains original four immutable source links, peer Chromium two-pin commitb298 with provenance, upstream AppKit5665 bootstrap backport and strict window-origin polling repair. Exactd043 Code/Security were clean and all14 applicable pull-request workflows plus four target-event runs passed. Post-merge proof confirmed all nine reviewed paths byte-identical, prior PR #7 QEMU paths unchanged, workflow owner15pass, geometry8pass, and QEMU integration owners43pass/2expected skips. No native/container execution, install, publish or deploy occurred. Upstream contributor Dillon DuPont was notified on PR5665. This is a noncounting prerequisite.
 
 On old471, all four repaired source URLs resolved in lychee; the only external-link failure was unchanged `https://agentclientprotocol.com/` returning500. No policy suppression or unrelated source edit was made. Image Doctor failed because the fork ledger lacked the newly moved Omarchy child digest `sha256:fc4d5a56ad79755120db992a7b2da562745930b5f6eb5f80f4d07494e23790b0`.
 
@@ -125,7 +125,7 @@ Root qualified authentic upstream ledger04b4d55db669bd856942869eba3841932d852034
 
 ## Environment limits and correction history
 
-No local heavy command, queued build or host-resource reservation is held. The brief PR7 merge/main-proof admission expired after the completed merge/proof before this continuation performed its release readback; that readback returned `LOST` rather than `RELEASED`. There is no live lease. The corrected chronology is retained here and in private evidence. Read-only source workers need no mutation lease. Every actual END callback for21752 was delivered to parent/14f/395. QA remains sole-coordinator owned and user edits are preserved.
+No local heavy command, queued build or host-resource reservation is held. The PR9 merge completed at15:29:39Z within its lease. That lease expired at15:52:26Z; the read-only scratch main smoke began at15:53:02Z and passed, so the 36-second verification timing gap is retained honestly. A fresh admission was acquired afterward for report closeout and PR4 integration. The earlier PR7 release readback separately returned `LOST` after its lease expired. Read-only source workers need no mutation lease. Every actual END callback for21752 was delivered to parent/14f/395. QA remains sole-coordinator owned and user edits are preserved.
 
 Earlier quota failures, terminated migration9327, actual successful disk continuation95869, canonical-docs long-socket failure and corrected short private TMP continuation remain preserved in logs/workpad. Migration9327 never completed; only confirmed inactive owned disposable outputs were removed. Initial nightly setup used the user Rustup prefix before the private-prefix correction; root default1.99 and SDK pin1.97.1 remain unchanged. No shared toolchain/cache was deleted and no pressure error is counted as a product finding.
 
@@ -137,7 +137,7 @@ Ponytail PR5 actually merged20a60e0e with reviewed2f73 tree equality and post-me
 
 ## Final disposition
 
-IN PROGRESS / NOT_LANDED. Accepted2, merged/verified1 (P1 issue6). Tracker2 stays open. No final report PR or comprehensive-exhaustion claim exists. Native PR watches retain4/9; additional source discovery does not establish a completed repair. Required CI, exact-head reviews, protected landing and post-merge proof remain binding.
+IN PROGRESS / NOT_LANDED. Accepted2, merged/verified1 (P1 issue6). Tracker2 stays open. No final report PR or comprehensive-exhaustion claim exists. PR9 is merged and verified; PR4 is refreshed on current main and remains the only accepted repair not landed. Fresh exact-head review, CI, protected landing and post-merge proof remain binding.
 
 ## Latest continuation
 
