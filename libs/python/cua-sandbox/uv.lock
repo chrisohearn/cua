@@ -615,9 +615,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-auth = [
-    { name = "webbrowser-open" },
-]
 dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -660,7 +657,6 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "vncdotool", specifier = ">=1.2.0" },
-    { name = "webbrowser-open", marker = "extra == 'auth'", specifier = ">=0.0.1" },
 ]
 provides-extras = ["driver", "auth", "mcp", "dev"]
 
@@ -2443,15 +2439,6 @@ dependencies = [
     { name = "twisted" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/64/68/d43c145f110fbc7da6cbd4082d940fdbc8aaa7d9e8b52f3f574485d49208/vncdotool-1.2.0.tar.gz", hash = "sha256:53408d18ca7f9f21c525fc88189b01ca6594153ec1a9be09f6198306d166ea0d", size = 54809, upload-time = "2023-07-06T18:00:43.146Z" }
-
-[[package]]
-name = "webbrowser-open"
-version = "0.3.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/48/40/2e6eb1c513b60fe489da49bbdfca3e0d8c4ae5657352c90dad1dde2cc3c4/webbrowser_open-0.3.0.tar.gz", hash = "sha256:d751dd76e888d105d786b86ac890b9c0dd7b273d6f39e67c57a1cc7ddefe03a2", size = 14657, upload-time = "2025-02-27T12:09:16.143Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/2d/0e/16fa8d77cfefd4f09c7c21e518e8f7cc5d0c1b80c57048a38deabc13b96b/webbrowser_open-0.3.0-py3-none-any.whl", hash = "sha256:bd44ce80df1db634df3156f6b56ec2b445812e7bcff82d9f22b2217acaede23f", size = 9315, upload-time = "2025-02-27T12:09:14.089Z" },
-]
 
 [[package]]
 name = "yarl"
