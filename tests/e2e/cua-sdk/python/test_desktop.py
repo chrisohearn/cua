@@ -19,6 +19,7 @@ import asyncio
 import json
 import secrets
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import e2e
 import pytest
@@ -146,6 +147,61 @@ def test_local_container_desktop(local_desktop):
 
 
 # ------------------------------------------------------------ run-omarchy
+
+
+@pytest.mark.e2e("run-omarchy", "container")
+@pytest.mark.parametrize(
+    "success,stdout,expected,calls",
+    [
+        (False, b"90 70\n", (0, -7), 2),
+        (True, b"", (0, -7), 2),
+        (True, b"not coordinates", (0, -7), 2),
+        (True, b"1 2 3", (0, -7), 2),
+        (True, b"\xff", (0, -7), 2),
+        (True, b"0 -7\n", (0, -7), 1),
+        (True, b"-120 0\n", (-120, 0), 1),
+    ],
+)
+def test_window_origin_waits_for_usable_geometry(monkeypatch, success, stdout, expected, calls):
+    """A command result alone is not evidence of usable fixture geometry."""
+    observed = []
+
+    async def sh(command, timeout_ms):
+        observed.append((command, timeout_ms))
+        return SimpleNamespace(
+            exit=SimpleNamespace(success=success if len(observed) == 1 else True),
+            stdout=stdout if len(observed) == 1 else b"0 -7\n",
+        )
+
+    async def no_delay(_):
+        pass
+
+    monkeypatch.setattr(e2e.asyncio, "sleep", no_delay)
+    origin = e2e.run_async(
+        e2e.window_origin(SimpleNamespace(sh=sh), "Synthetic Fixture"), timeout=1
+    )
+    assert origin == expected
+    assert len(observed) == calls
+    assert all(timeout_ms == 20_000 for _, timeout_ms in observed)
+
+
+@pytest.mark.e2e("run-omarchy", "container")
+def test_window_origin_exhausts_its_existing_bound(monkeypatch):
+    calls = 0
+
+    async def sh(command, timeout_ms):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(exit=SimpleNamespace(success=True), stdout=b"")
+
+    async def no_delay(_):
+        pass
+
+    monkeypatch.setattr(e2e.asyncio, "sleep", no_delay)
+    with pytest.raises(AssertionError) as error:
+        e2e.run_async(e2e.window_origin(SimpleNamespace(sh=sh), "Synthetic Fixture"), timeout=1)
+    assert str(error.value) == "timed out waiting for window 'Synthetic Fixture'; last=None"
+    assert calls == 30
 
 
 async def _omarchy(d: Desktop) -> None:
