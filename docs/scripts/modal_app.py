@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Optional
 
 import modal
-from markdown_it import MarkdownIt
 
 # Define the Modal app
 app = modal.App("cua-docs-mcp")
@@ -217,47 +216,6 @@ def extract_metadata(page_html: str, title: str) -> dict[str, str]:
     if match:
         description = html.unescape(match.group(1))
     return {"title": title, "description": description}
-
-
-def clean_markdown(markdown: str) -> str:
-    """Extract plain text content from markdown using markdown-it-py parser"""
-    md_parser = MarkdownIt()
-    tokens = md_parser.parse(markdown)
-
-    text_parts = []
-
-    def extract_text(token_list):
-        for token in token_list:
-            if token.type == "inline" and token.children:
-                for child in token.children:
-                    if child.type == "text":
-                        text_parts.append(child.content)
-                    elif child.type == "code_inline":
-                        text_parts.append(child.content)
-                    elif child.type == "softbreak":
-                        text_parts.append(" ")
-                    elif child.type == "hardbreak":
-                        text_parts.append("\n")
-            elif token.type == "fence" or token.type == "code_block":
-                text_parts.append(token.content)
-                text_parts.append("\n")
-
-            if token.children:
-                extract_text(token.children)
-
-            if token.type in [
-                "heading_close",
-                "paragraph_close",
-                "list_item_close",
-                "blockquote_close",
-            ]:
-                text_parts.append("\n")
-
-    extract_text(tokens)
-    text = "".join(text_parts)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    text = re.sub(r" {2,}", " ", text)
-    return text.strip()
 
 
 # =============================================================================
