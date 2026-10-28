@@ -593,6 +593,18 @@ impl FleetClient {
     /// sandbox's spacesd has the token; if it never arrives the claim is
     /// released and [`Error::ClaimSecretsNotDelivered`] returned.
     pub async fn acquire(&self, pool: &Pool, options: ClaimOptions) -> Result<BoundSandbox> {
+        self.acquire_with_created(pool, options)
+            .await
+            .map(|(sandbox, _)| sandbox)
+    }
+
+    /// Like [`Self::acquire`], retaining whether this call created the claim
+    /// so later readiness cleanup cannot delete a borrowed sandbox.
+    pub async fn acquire_with_created(
+        &self,
+        pool: &Pool,
+        options: ClaimOptions,
+    ) -> Result<(BoundSandbox, bool)> {
         let token = options.claim_token.clone();
         let (claim, created) = self.claim(pool, options).await?;
         // A caller that gives up (a cancelled create drops this future)
@@ -605,7 +617,7 @@ impl FleetClient {
         };
         let out = self.acquire_bound(pool, claim, created, token).await;
         guard.armed = false;
-        out
+        out.map(|sandbox| (sandbox, created))
     }
 
     async fn acquire_bound(
