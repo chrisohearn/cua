@@ -102,8 +102,9 @@ class NativeQEMURuntime(NativeRuntime):
         ref = cloud_registry_image(image)
         if disk and not has_build_work(image):
             return f"disk:{disk}"
-        if ref is not None and not disk and not has_build_work(image):
+        if ref is not None and not disk:
             # The SDK pulls the pinned containerDisk (the disk Fleet boots).
+            # NativeRuntime checks spacesd and applies VM layers after boot.
             return f"vm:{ref}"
         session = await create_session_disk(image, name, base_disk=Path(disk) if disk else None)
         if "sessions" in str(session):

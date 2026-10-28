@@ -92,3 +92,44 @@ def test_kicad_install_errors_carry_stderr():
     out = _output_tail({"stdout": "", "stderr": "sudo: effective uid is not 0", "return_code": 1})
     assert out == "sudo: effective uid is not 0"
     assert _output_tail({"stdout": "", "stderr": "", "return_code": 100}) == "exit code 100"
+
+
+async def test_kicad_public_netlist_methods(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from cua_bench.apps.registry import AppsProxy
+
+    reference = """(export
+      (components (comp (ref "R1") (value "1k")
+        (libsource (lib "Device") (part "R"))))
+      (nets (net (code "1") (name "signal") (node (ref "R1") (pin "1")))))"""
+    candidate = reference.replace('"signal"', '"renamed"')
+    session = SimpleNamespace(
+        os_type="linux", run_command=AsyncMock(return_value={"stdout": candidate})
+    )
+    app = AppsProxy(session).kicad
+
+    assert await app.get_components(netlist_path="/candidate.net") == [
+        {"ref": "R1", "value": "1k", "lib": "Device", "part": "R"}
+    ]
+    session.run_command.assert_awaited_once_with('cat "/candidate.net"', check=False)
+
+    session.run_command.return_value = {"stdout": "* circuit\nR1 in 0 1k\n.end\n"}
+    assert await app.get_components(netlist_path="/circuit.cir") == [
+        {"ref": "R1", "type": "resistor", "value": "1k", "nodes": ["in", "0"]}
+    ]
+
+    reference_path = tmp_path / "reference.net"
+    reference_path.write_text(reference, encoding="utf-8")
+    paths = {"candidate_path": "/candidate.net", "reference_path": str(reference_path)}
+    session.run_command.return_value = {"stdout": candidate}
+    assert await app.compare_netlist(**paths) == 1.0  # Net names are ignored.
+
+    session.run_command.return_value = {"stdout": candidate.replace('"1k"', '"2k"')}
+    assert await app.compare_netlist(**paths) == 0.5
+    assert await app.compare_netlist(**paths, require_same_components=False) == 1.0
+
+    session.run_command.return_value = {"stdout": candidate.replace('(pin "1")', '(pin "2")')}
+    assert await app.compare_netlist(**paths) == 0.5
+    assert await app.compare_netlist(**paths, require_same_nets=False) == 1.0
