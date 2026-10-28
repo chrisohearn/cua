@@ -151,8 +151,8 @@ fn sq(s: &str) -> String {
 /// `/proc/PID/exe`, else its argv[0]: root in gVisor may not read another
 /// user's `exe` link), without a ` (deleted)` suffix. `cua_exe_sha PID`
 /// prints the sha256 of what it runs (as its owner when root cannot read
-/// it). `cua_daemon` prints `<pid> <exe>` of the running cua-spacesd (the
-/// exec's parent first).
+/// it), or reports both read failures. `cua_daemon` prints `<pid> <exe>` of
+/// the running cua-spacesd (the exec's parent first).
 const FIND_DAEMON: &str = r#"cua_exe() {
   e=$(readlink "/proc/$1/exe" 2>/dev/null) || e=""
   [ -n "$e" ] || e=$(tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | head -n1) || true
@@ -160,12 +160,27 @@ const FIND_DAEMON: &str = r#"cua_exe() {
   echo "${e% (deleted)}"
 }
 cua_exe_sha() {
-  s=$(sha256sum "/proc/$1/exe" 2>/dev/null | cut -d' ' -f1)
-  if [ -z "$s" ] && [ "$(id -u)" = 0 ]; then
-    u=$(stat -c %U "/proc/$1" 2>/dev/null)
-    s=$(runuser -u "$u" -- sha256sum "/proc/$1/exe" 2>/dev/null | cut -d' ' -f1)
+  direct_rc=0
+  direct=$(sha256sum "/proc/$1/exe" 2>&1) || direct_rc=$?
+  s=$(printf '%s\n' "$direct" | cut -d' ' -f1)
+  if [ "$direct_rc" = 0 ] && [ -n "$s" ]; then echo "$s"; return 0; fi
+  u=""; retry_rc=not_attempted; retry="not root"
+  if [ "$(id -u)" = 0 ]; then
+    if u=$(stat -c %U "/proc/$1" 2>&1); then
+      retry_rc=0
+      retry=$(runuser -u "$u" -- sha256sum "/proc/$1/exe" 2>&1) || retry_rc=$?
+      s=$(printf '%s\n' "$retry" | cut -d' ' -f1)
+      if [ "$retry_rc" = 0 ] && [ -n "$s" ]; then echo "$s"; return 0; fi
+    else
+      retry_rc=$?; retry="owner lookup: $u"; u=""
+    fi
   fi
-  echo "$s"
+  status=$(sed -n '/^Uid:/p;/^Gid:/p;/^CapPrm:/p;/^CapEff:/p' "/proc/$1/status" 2>/dev/null | tr '\n' ';')
+  direct=$(printf '%s' "$direct" | tr '\n' ' ')
+  retry=$(printf '%s' "$retry" | tr '\n' ' ')
+  printf 'cannot hash running executable pid=%s initial_rc=%s initial=[%s] owner=[%s] retry_rc=%s retry=[%s] status=[%s]\n' \
+    "$1" "$direct_rc" "$direct" "$u" "$retry_rc" "$retry" "$status" >&2
+  return 1
 }
 cua_server_exe() {
   exe=$(cua_exe "$1") || return 1
@@ -276,7 +291,8 @@ echo "how=$how"
 /// Prints `<pid> <sha256>` of the running cua-spacesd.
 const DAEMON_IDENTITY: &str = r#"d=$(cua_daemon) || exit 1
 pid=${d%% *}
-echo "$pid $(cua_exe_sha "$pid")"
+sha=$(cua_exe_sha "$pid") || exit 1
+echo "$pid $sha"
 "#;
 
 /// `$1` program basename `$2` sha256: stops processes running another
@@ -291,7 +307,7 @@ stopped=""
 for p in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
   exe=$(cua_exe "$p") || continue
   case "${exe##*/}" in "$prog") ;; *) continue ;; esac
-  sha=$(cua_exe_sha "$p")
+  sha=$(cua_exe_sha "$p" 2>/dev/null) || continue
   [ -n "$sha" ] || continue
   if [ "$sha" != "$want" ]; then $S kill -TERM "$p" 2>/dev/null && stopped="$stopped,$p"; fi
 done
@@ -862,6 +878,92 @@ supervisorctl() {
                 assert!(!String::from_utf8_lossy(&out.stderr).contains("sleep 1;"));
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_identity_reports_hash_read_errors() {
+        for (override_command, expected_error) in [
+            ("", "owner hash denied"),
+            (
+                "stat() { echo 'owner lookup failed' >&2; return 8; }",
+                "owner lookup failed",
+            ),
+            (
+                "runuser() { echo 'runuser unavailable' >&2; return 127; }",
+                "runuser unavailable",
+            ),
+            ("id() { echo 1000; }", "not root"),
+        ] {
+            let setup = format!(
+                r#"
+id() {{ echo 0; }}
+sha256sum() {{ echo 'initial hash denied' >&2; return 13; }}
+stat() {{ echo cua; }}
+runuser() {{ echo 'owner hash denied' >&2; return 7; }}
+sed() {{ case "$*" in */status) echo 'uid=1000';; *) command sed "$@";; esac; }}
+{override_command}
+"#
+            );
+            let out = daemon_shell(
+                &[("30", "/usr/local/bin/cua-spacesd", "serve", "new")],
+                &setup,
+                DAEMON_IDENTITY,
+            );
+            assert_eq!(
+                out.status.code(),
+                Some(1),
+                "identity probe lost its hash error: {out:?}"
+            );
+            assert!(
+                out.stdout.is_empty(),
+                "no PID-plus-empty-hash success record: {out:?}"
+            );
+            let error = String::from_utf8_lossy(&out.stderr);
+            for detail in ["pid=30", "initial hash denied", "uid=1000", expected_error] {
+                assert!(error.contains(detail), "missing {detail}: {out:?}");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_identity_keeps_owner_hash_fallback() {
+        let out = daemon_shell(
+            &[("30", "/usr/local/bin/cua-spacesd", "serve", "new")],
+            r#"
+id() { echo 0; }
+sha256sum() { echo 'initial hash denied' >&2; return 13; }
+stat() { echo cua; }
+runuser() { printf '%s\n' 'new /proc/30/exe'; }
+"#,
+            DAEMON_IDENTITY,
+        );
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "30 new");
+        assert!(out.stderr.is_empty(), "{out:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn program_restart_keeps_unreadable_processes() {
+        let out = daemon_shell(
+            &[("30", "/usr/local/bin/cua-driver", "", "old")],
+            r#"
+S=""
+id() { echo 0; }
+sha256sum() { echo 'initial hash denied' >&2; return 13; }
+stat() { echo cua; }
+runuser() { echo 'owner hash denied' >&2; return 7; }
+sed() { case "$*" in */status) echo 'uid=1000';; *) command sed "$@";; esac; }
+supervisorctl() { return 1; }
+kill() { echo 'unexpected process signal' >&2; return 1; }
+"#,
+            &format!("set -- cua-driver expected\n{RESTART_PROGRAM}"),
+        );
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "how=");
+        assert!(out.stderr.is_empty(), "{out:?}");
     }
 
     #[test]
