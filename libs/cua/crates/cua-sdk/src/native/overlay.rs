@@ -3,8 +3,8 @@
 //! image (`cua sb create --overlay cua-driver=PATH`, `Sandbox.overlay`).
 //!
 //! For each overlay, as root in the guest: through the container engine for
-//! local container sandboxes (`docker exec -u 0`, no in-guest
-//! agent needed), else through cua-spacesd (as root, or with passwordless
+//! local container sandboxes (Docker exec as root), else through cua-spacesd
+//! (as root, or with passwordless
 //! sudo):
 //!
 //! 1. copy the file to a temporary guest path and check its sha256;
@@ -21,6 +21,9 @@
 //!    executable. For any other name, processes still running an older copy
 //!    of that executable are stopped (a supervisor, or the next call,
 //!    starts the new one).
+//!    Identity normally hashes the selected process through /proc; if that
+//!    access is denied, authenticated daemon metadata binds the same live PID
+//!    to its in-process executable hash without adding process privileges.
 //!
 //! Known names resolve their guest path: `cua-spacesd` is the executable of
 //! the running daemon (`cua-guestd` and `cua-env-driver` in older images),
@@ -29,6 +32,7 @@
 
 use super::{Sandbox, SpacesdClient, run};
 use crate::{CuaError, Result};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -570,6 +574,232 @@ async fn apply_one(
     })
 }
 
+/// Validates the two results of one authenticated request to the daemon.
+/// Metadata supplies its process ID; the linked health tool hashes
+/// /proc/self/exe, including the old inode after an on-disk replacement.
+fn reported_daemon_identity(batch: &Value, selected_pid: u32) -> Result<String> {
+    let bad = || CuaError::Runtime("overlay identity: invalid live PID/hash response".into());
+    let replies = batch.as_array().filter(|r| r.len() == 2).ok_or_else(bad)?;
+    let metadata = replies.iter().find(|r| r["id"] == 1).ok_or_else(bad)?;
+    let health = replies.iter().find(|r| r["id"] == 2).ok_or_else(bad)?;
+    let envelope = &metadata["result"];
+    if selected_pid == 0
+        || metadata["jsonrpc"] != "2.0"
+        || health["jsonrpc"] != "2.0"
+        || metadata.get("error").is_some()
+        || health.get("error").is_some()
+        || envelope["envelope_version"] != 1
+        || envelope["ok"] != true
+        || envelope["completion_known"] != true
+        || envelope["request_id"] != "overlay-identity"
+        || envelope["result"]["embedded"] != false
+        || envelope["result"]["pid"].as_u64() != Some(u64::from(selected_pid))
+        || health["result"]
+            .get("isError")
+            .is_some_and(|value| value != false)
+    {
+        return Err(bad());
+    }
+    let sha = health["result"]["structuredContent"]["build"]["exe_sha256"]
+        .as_str()
+        .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(bad)?;
+    Ok(sha.to_owned())
+}
+
+/// Uses the existing endpoint and credentials; never a new listener or token.
+async fn identity_rpc(
+    client: &cua_spacesd_client::SpacesdClient,
+    body: Value,
+    session: Option<&str>,
+) -> Result<(Value, Option<String>)> {
+    let mut headers = vec![
+        ("content-type".into(), "application/json".into()),
+        (
+            "accept".into(),
+            "application/json, text/event-stream".into(),
+        ),
+    ];
+    if let Some(session) = session {
+        headers.push(("mcp-session-id".into(), session.to_owned()));
+    }
+    let reply = client
+        .http(cua_spacesd_client::HttpCall {
+            method: "POST".into(),
+            path: "/mcp".into(),
+            headers,
+            body: serde_json::to_vec(&body)?,
+            timeout: Some(Duration::from_secs(5)),
+            max_response_bytes: Some(1024 * 1024),
+        })
+        .await?;
+    if !matches!(reply.status, 200 | 202 | 204) {
+        return Err(CuaError::Runtime(format!(
+            "overlay identity: MCP returned HTTP {}",
+            reply.status
+        )));
+    }
+    let session = reply
+        .headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("mcp-session-id"))
+        .map(|(_, value)| value.clone());
+    let value = if reply.body.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&reply.body)?
+    };
+    if value.get("error").is_some() {
+        return Err(CuaError::Runtime(
+            "overlay identity: MCP request failed".into(),
+        ));
+    }
+    Ok((value, session))
+}
+
+async fn daemon_identity_rpc(client: &SpacesdClient, selected_pid: u32) -> Result<String> {
+    let (initialized, session) = identity_rpc(
+        &client.client,
+        json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "cua-overlay-identity", "version": env!("CARGO_PKG_VERSION")}
+            }
+        }),
+        None,
+    )
+    .await?;
+    let session = session
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| CuaError::Runtime("overlay identity: MCP omitted its session".into()))?;
+    let result = async {
+        if initialized["result"]["capabilities"]["experimental"]["ai.cua.driver.envelopes"]["version"]
+            != 1
+        {
+            return Err(CuaError::Runtime(
+                "overlay identity: daemon PID metadata is unavailable".into(),
+            ));
+        }
+        identity_rpc(
+            &client.client,
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            Some(&session),
+        )
+        .await?;
+        let (opened, _) = identity_rpc(
+            &client.client,
+            json!({"jsonrpc": "2.0", "id": 0, "method": "cua/driver/v1/open", "params": {}}),
+            Some(&session),
+        )
+        .await?;
+        let binding = &opened["result"];
+        for name in ["connection_id", "generation"] {
+            if binding[name].as_str().is_none_or(str::is_empty) {
+                return Err(CuaError::Runtime(
+                    "overlay identity: daemon refused PID metadata".into(),
+                ));
+            }
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        // Both values must come from the same responding process, not two
+        // requests that could straddle its restart.
+        let (batch, _) = identity_rpc(
+            &client.client,
+            json!([
+                {
+                    "jsonrpc": "2.0", "id": 1, "method": "cua/driver/v1/exchange",
+                    "params": {
+                        "connection_id": binding["connection_id"],
+                        "generation": binding["generation"],
+                        "envelope": {
+                            "envelope_version": 1, "request_id": "overlay-identity",
+                            "operation": "metadata", "deadline_unix_ms": now + 5_000
+                        }
+                    }
+                },
+                {
+                    "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                    "params": {"name": "health_report", "arguments": {"include": ["binary_version"]}}
+                }
+            ]),
+            Some(&session),
+        )
+        .await?;
+        reported_daemon_identity(&batch, selected_pid)
+    }
+    .await;
+    // DELETE closes this probe's envelope receivers and driver session.
+    // Cleanup is best-effort when the daemon is itself restarting.
+    let _ = client
+        .client
+        .http(cua_spacesd_client::HttpCall {
+            method: "DELETE".into(),
+            path: "/mcp".into(),
+            headers: vec![("mcp-session-id".into(), session)],
+            timeout: Some(Duration::from_secs(1)),
+            ..Default::default()
+        })
+        .await;
+    result
+}
+
+async fn probe_daemon_identity(
+    sandbox: &Sandbox,
+    guest: &Guest,
+    identity: &str,
+    deadline: Instant,
+) -> Result<String> {
+    let denied = match guest.sh(identity.to_owned(), "identity").await {
+        Ok(out) => return Ok(out),
+        Err(error)
+            if error
+                .to_string()
+                .contains("cannot hash running executable pid=") =>
+        {
+            error.to_string()
+        }
+        Err(error) => return Err(error),
+    };
+    let probe = async {
+        // Keep the same unique-server selection even when /proc/PID/exe
+        // is unreadable to root and to a same-UID reader without its caps.
+        let selected = guest
+            .sh(format!("{FIND_DAEMON}\ncua_daemon"), "identity")
+            .await?;
+        let pid = selected
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse::<u32>().ok())
+            .filter(|pid| *pid != 0)
+            .ok_or_else(|| CuaError::Runtime("overlay identity: no selected daemon PID".into()))?;
+        let client = match guest {
+            Guest::Spacesd(client) => client.clone(),
+            Guest::Engine { .. } => sandbox.spacesd(Some(5_000)).await?,
+        };
+        let sha = daemon_identity_rpc(&client, pid).await?;
+        Ok::<String, CuaError>(format!("{pid} {sha}"))
+    };
+    let remaining = deadline
+        .saturating_duration_since(Instant::now())
+        .min(Duration::from_secs(5));
+    if remaining.is_zero() {
+        return Err(CuaError::Runtime(denied));
+    }
+    match tokio::time::timeout(remaining, probe).await {
+        Ok(Ok(out)) => Ok(out),
+        Ok(Err(error)) => Err(CuaError::Runtime(format!(
+            "{denied}; authenticated live identity: {error}"
+        ))),
+        Err(_) => Err(CuaError::Runtime(format!(
+            "{denied}; authenticated live identity timed out"
+        ))),
+    }
+}
+
 /// Restarts the guest's cua-spacesd and waits (bounded by `deadline`)
 /// until a new process runs `sha256`.
 async fn restart_daemon(
@@ -580,7 +810,7 @@ async fn restart_daemon(
 ) -> Result<String> {
     let identity = format!("{FIND_DAEMON}{DAEMON_IDENTITY}");
     // Already running this build (the same overlay applied twice): no restart.
-    if let Ok(out) = guest.sh(identity.clone(), "identity").await
+    if let Ok(out) = probe_daemon_identity(sandbox, guest, &identity, deadline).await
         && out.split_whitespace().nth(1) == Some(sha256)
     {
         return Ok(String::new());
@@ -608,9 +838,13 @@ async fn restart_daemon(
         // Through spacesd, a fresh attachment each time (the old process is
         // gone); through the engine, the same exec.
         let probe = match guest {
-            Guest::Engine { .. } => guest.sh(identity.clone(), "identity").await,
+            Guest::Engine { .. } => {
+                probe_daemon_identity(sandbox, guest, &identity, deadline).await
+            }
             Guest::Spacesd(_) => match sandbox.spacesd(Some(5_000)).await {
-                Ok(env) => Guest::Spacesd(env).sh(identity.clone(), "identity").await,
+                Ok(env) => {
+                    probe_daemon_identity(sandbox, &Guest::Spacesd(env), &identity, deadline).await
+                }
                 Err(e) => Err(e),
             },
         };
@@ -679,6 +913,67 @@ impl Sandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reported_identity_requires_the_selected_process_and_live_hash() {
+        let sha = "ab".repeat(32);
+        let batch = json!([
+            {
+                "jsonrpc": "2.0", "id": 1,
+                "result": {
+                    "envelope_version": 1, "ok": true,
+                    "completion_known": true, "request_id": "overlay-identity",
+                    "result": {"pid": 30, "embedded": false}
+                }
+            },
+            {
+                "jsonrpc": "2.0", "id": 2,
+                "result": {
+                    "structuredContent": {"build": {"exe_sha256": sha}},
+                    "isError": false
+                }
+            }
+        ]);
+        assert_eq!(reported_daemon_identity(&batch, 30).unwrap(), sha);
+        let mut reordered = batch.clone();
+        reordered.as_array_mut().unwrap().reverse();
+        assert_eq!(reported_daemon_identity(&reordered, 30).unwrap(), sha);
+        assert!(reported_daemon_identity(&batch, 0).is_err());
+        assert!(reported_daemon_identity(&batch, 31).is_err());
+        for (path, value) in [
+            ("/0/jsonrpc", json!("1.0")),
+            ("/1/jsonrpc", json!("1.0")),
+            ("/0/result/envelope_version", Value::Null),
+            ("/0/result/ok", json!(false)),
+            ("/0/result/completion_known", json!(false)),
+            ("/0/result/request_id", json!("other-request")),
+            ("/0/result/result/pid", Value::Null),
+            ("/0/result/result/embedded", json!(true)),
+            ("/1/result/isError", json!(true)),
+            ("/1/result/isError", json!("false")),
+            ("/1/result/structuredContent/build/exe_sha256", json!("")),
+            (
+                "/1/result/structuredContent/build/exe_sha256",
+                json!("x".repeat(64)),
+            ),
+            ("/0/id", json!(7)),
+        ] {
+            let mut invalid = batch.clone();
+            *invalid.pointer_mut(path).unwrap() = value;
+            assert!(
+                reported_daemon_identity(&invalid, 30).is_err(),
+                "{path} must not certify a live executable"
+            );
+        }
+        for index in [0, 1] {
+            let mut error = batch.clone();
+            error[index]["error"] = json!({"code": -32603, "message": "failed"});
+            assert!(reported_daemon_identity(&error, 30).is_err());
+        }
+        let mut missing = batch;
+        missing.as_array_mut().unwrap().remove(0);
+        assert!(reported_daemon_identity(&missing, 30).is_err());
+    }
 
     #[cfg(unix)]
     fn daemon_shell(
