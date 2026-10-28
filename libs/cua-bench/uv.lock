@@ -830,7 +830,6 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "vncdotool", specifier = ">=1.2.0" },
-    { name = "webbrowser-open", marker = "extra == 'auth'", specifier = ">=0.0.1" },
 ]
 provides-extras = ["driver", "auth", "mcp", "dev"]
 
