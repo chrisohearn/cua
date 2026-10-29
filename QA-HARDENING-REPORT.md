@@ -6,7 +6,7 @@ This sprint is in progress. Two P1 findings are admitted. Issue #6 completed its
 
 - Repository: `chrisohearn/cua`, verified remote `https://github.com/chrisohearn/cua`.
 - Target: `main`.
-- Starting target SHA: `7cc4bd0bfc3ce1a3246ae47fe02948dc9f64f010`. Latest fetched target SHA: `519d0e535fa75f508fd575939bb018f6d8286e5a`, tree `465dee9d9ad522e3aac9c6bc8368b965f7c243d6`. It contains the verified PR #7 repair and merged noncounting PR #9 prerequisites. Separate peer PR #1/#5 work is excluded from sprint counts.
+- Starting target SHA: `7cc4bd0bfc3ce1a3246ae47fe02948dc9f64f010`. Current remote and fetched target SHA: `519d0e535fa75f508fd575939bb018f6d8286e5a`, tree `465dee9d9ad522e3aac9c6bc8368b965f7c243d6`. It contains the verified PR #7 repair and merged noncounting PR #9 prerequisites. Separate Ponytail PR #1/#5 work and its active successor PR #10 are excluded from excellence counts.
 - Start: 2026-10-28 04:02 UTC.
 - Coordinator: `mcp:2af09de7-b4a2-4a2d-81f4-e7552ba16143`.
 - Tracker: https://github.com/chrisohearn/cua/issues/2.
@@ -25,7 +25,7 @@ Trust boundaries include the host versus sandbox, client versus in-guest daemon,
 
 Installed repo-excellence-sprint, chris-mode, revotech-engineering, revotech-tools, and revotech-github sources were read from `/home/cohearn/.codex/skills/`. Repository AGENTS, contribution, maintainer, security, RFC, CODEOWNERS, development, and test rules govern the work. Project memory is absent at the root. This report is coordinator-owned.
 
-The Ponytail root owns independent simplicity work and releases admission at atomic handoffs. Its PR #1 merged67804e9 and PR #5 merged20a60e0e with exact reviewed/tested full-tree equality; their source reservations are released and neither counts here. It retains the11 PR #8 paths atb2987619f (original tested6135 stays frozen). This root retains PR #4's five paths. PR #9's nine-path aggregate prerequisite is merged; its shared Chromium changes reuse the peer's original commit through explicit handoff. PR #7's two source paths are also merged; its own detached worktree at actualmain519d is retained for proof and read-only auth/Keyvault discovery. This coordinator is the sole QA-report writer. Portfolio parent owns maintenance/contribution gates.
+The Ponytail root owns independent simplicity work and releases admission at atomic handoffs. Its PR #1 merged67804e9 and PR #5 merged20a60e0e with exact reviewed/tested full-tree equality; their source reservations are released and neither counts here. Its original PR #8 is superseded by active PR #10 under the same correction lineage; that root retains the overlay, image-catalog/workflow, teleport/lockfile and benchmark-agent paths. This root retains PR #4's five paths. PR #9's nine-path aggregate prerequisite is merged; its shared Chromium changes reuse the peer's original commit through explicit handoff. PR #7's two source paths are also merged; detached actual-main worktree6 is retained for private proof and read-only discovery. This coordinator is the sole QA-report writer. Portfolio parents own maintenance/contribution gates.
 
 The fork initially had `has_issues=false`. Enabling only Issues was completed and native readback confirmed `has_issues=true`. The portfolio coordinator explicitly authorized enabling only Issues as the reversible prerequisite for the mandatory lifecycle. Visibility, access, protections, Actions permissions, billing, releases, and other settings remain outside that setup action.
 
@@ -67,7 +67,7 @@ Host: Linux x86_64, Omarchy kernel `7.2.8-10-omarchy`, Hyprland session. Availab
 | Windows native behavior | Canonical runner mapped | Interactive Windows environment or hosted canonical lane |
 | Linux X11 and Wayland | Lightweight local readiness only | Disposable canonical and compositor-specific lanes |
 | Concurrency, bounded stress, interruption and recovery | Not yet exercised | Reproducible workload per critical workflow |
-| Security and isolation | Read-only auth and Keyvault trust-boundary mapping on actual main1769 | Private deduplication and safe hermetic proof; private disclosure if validated |
+| Security and isolation | Read-only auth and Keyvault trust-boundary mapping on actual main519d | Private deduplication and safe hermetic proof; private disclosure if validated |
 | Final fresh adversarial search | Not started | Fresh assessment after coverage pass |
 
 ## Candidates and accepted findings
@@ -83,7 +83,7 @@ Issue #3 is admitted as P1 after real sandbox-core/FakeFleet execution proved th
 | Python destroy after reconnect or resume does not own runtime cleanup | Reconnect and resume construct handles without runtime fields | Source-seam reproduction returned; normal-package Python 3.12 proof reproduced through unchanged modules and SDK-boundary recorders; root admission pending |
 | Registry-backed QEMU image layers become rejected `disk:` reference | Normal-package Python 3.12 reproduction without a disk override runs actual selection/backing/cache code and observes exact refusal before resolution/create | P1 issue #6 completed through PR #7 at reviewedf3c, merge1769/tree3672. Baseline9 intended failures/candidate9 passes; merged-main two owners43pass/2fixture skips, private wheel+sdist canonical metadata/content smoke pass. All applicable final-head CI and Code/Security pass; original3P2 limitations remain unfixed/nonblocking |
 | Direct Windows PTY defaults to Unix shell | Direct connect has no environment metadata; PTY selector chooses `/bin/sh` | Source-seam reproduction returned; normal-package Python 3.12 proof reproduced through unchanged modules and SDK-boundary recorders; root admission pending, no native Windows proof |
-| TypeScript agent HTTP body wait exceeds timeout | Unchanged public client, real Node fetch, loopback body stall: 100 ms timeout still pending at 650.81 ms; healthy JSON completes in 12.83 ms | Source-runtime qualification, no issue admission. Dependencies shimmed only for telemetry/unused Peer/build version. Support and impact qualification remain |
+| TypeScript agent HTTP body wait exceeds timeout | Unchanged public client, real Node fetch, loopback body stall: 100 ms timeout still pending at 650.81 ms; healthy JSON completes in 12.83 ms | Rejected for this sprint cutoff: the source package is listed in the workspace but the public npm registry returns 404 and no release workflow was found, so current evidence does not establish a realistic major supported-user impact. No issue or repair |
 
 The ownership lead was compared with upstream PRs #4468 and #4560. #4560 landed local borrowed-sandbox protection and explicitly excluded other cleanup paths. #4468 remains open upstream and is not this sprint's claim. Neither has a closing issue. Any admitted cloud repair must preserve that lineage, avoid those deferred changes, and explain distinct scope.
 
@@ -137,13 +137,19 @@ Docker socket access remains denied. Portfolio and historical owner confirmed no
 
 ## Separately owned work
 
-Ponytail PR5 actually merged20a60e0e with reviewed2f73 tree equality and post-merge mocked-login proof. It retains11 PR8 paths/headb298/correction1 and original clean6135 proof (199Rust, fake handler checks,321benchmark pass/2existing skips). Its new image/browser/container/Doctor CI remains separately owned. Coordinator PR5 assistance was title metadata only; no count/ownership transfer. PR1 merge67804e9 and other unrelated simplifications remain excluded.
+Ponytail PR5 actually merged20a60e0e with reviewed2f73 tree equality and post-merge mocked-login proof. Original PR8 is superseded by PR10, which remains wholly with that root under its existing high-water correction lineage and owns its current source/review/CI/merge gates. Original clean6135 proof (199Rust, fake-handler checks,321benchmark pass/2existing skips) remains peer evidence, not an excellence completion. Coordinator PR5 assistance was title metadata only; no count/ownership transfer. PR1 merge67804e9 and other unrelated simplifications remain excluded.
 
 ## Final disposition
 
 IN PROGRESS / NOT_LANDED. Accepted2, merged/verified1 (P1 issue6). Tracker2 stays open. No final report PR or comprehensive-exhaustion claim exists. PR9 is merged and verified; PR4 is refreshed on current main and remains the only accepted repair not landed. Fresh exact-head review, CI, protected landing and post-merge proof remain binding.
 
-## Latest continuation
+## Joined lifecycle checkpoint — 2026-10-29
+
+Chris's joined Repo Excellence and Ponytail request retains this root as the single Cua coordinator. Remote main remains519d. GitHub has two open issues (#2 tracker and accepted P1 #3) and two open pull requests: owned PR #4 and separately owned Ponytail successor PR #10. Issue #6 / PR #7 remains the sole completed qualifying lifecycle. PR #4 exact head60dc is mergeable; exact-head Code and Security reviews were requested once on this checkpoint, while required hosted CI, merge and fetched-main proof remain binding.
+
+The private Keyvault file-anchor probe remains unadmitted and undisclosed. Attempt1 stopped before compilation on an offline `argon2` cache miss. A separately authorized frozen-lock Linux fetch downloaded only `argon2 0.5.3`, `blake2 0.10.6` and `password-hash 0.5.0`; all archive checksums match the frozen lock. Attempt2 is prepared but unexecuted: `run-attempt2.py` SHA256 `4b681cd34034c3170128170bc95f62d8aaaa2d28d7a1cde77143c6634a76320d`, bindings SHA256 `c88760ffa600079a5506dbcbf82995fc65032b7e333260751dea5734b2117f68`. It uses a new private target/log/result namespace, performs no fetch or lock regeneration, and awaits separate finite qualification. No Keyvault finding, severity, issue or count is admitted.
+
+## Historical continuation log (superseded where the checkpoint above differs)
 
 PR5 actual merged main is20a60e0e6043e3b4187a74c13d3723d7d04069e7/treee29bc559d4e46b32a8d0eb6afa341e79276b6a08. PR7 now guardedly integrates it atf3c5d3da24b91bc5c03b558c37733437e00fb296/tree3672ec69d59d72039d0eec829c1a81cf92c993f9; original two source/test hashes are identical and relative-main diff stays two files. Focused complete owners reran43pass/2local fixture skips; old native851pass CI covers those two cases. Exactf3c Code/Security and CI are pending. The original3P2 notes stay unfixed/nonblocking; no P2 repair or new count.
 
