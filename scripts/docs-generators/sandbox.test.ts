@@ -125,6 +125,55 @@ test('benchmark entries carry their lock and benchmarks; others carry neither', 
   assert.throws(() => validateImageList(badBench, source), /invalid benchmark/);
 });
 
+test('CI fixtures are immutable digest refs that nothing offers', () => {
+  const source = loadSourceFacts();
+  const list = loadImageList(source);
+  const fixtures = list.images.filter((i) => i.group === 'ci');
+  assert.ok(fixtures.length > 0, 'the overlay doctor CI fixture is listed');
+  const rendered = [
+    renderImageList(list),
+    renderCuaImages(list),
+    renderBenchmarks(list),
+    renderImageBullets(list),
+    renderTiers(list),
+  ].join('\n');
+  for (const image of fixtures) {
+    assert.match(image.ref, /^ghcr\.io\/trycua\/[a-z0-9-]+@sha256:[0-9a-f]{64}$/);
+    assert.ok(!pickerImages(list).includes(image), image.ref);
+    assert.ok(!rendered.includes(image.ref), image.ref);
+  }
+
+  const index = list.images.findIndex((i) => i.group === 'ci');
+  const variant = (edit: (l: { groups: Array<Record<string, unknown>>; images: Array<Record<string, unknown>> }) => void) => {
+    const copy = structuredClone(list) as unknown as {
+      groups: Array<Record<string, unknown>>;
+      images: Array<Record<string, unknown>>;
+    };
+    edit(copy);
+    return copy;
+  };
+  // The moving tag the fixture was published under.
+  const mutable = variant((l) => (l.images[index].ref = source.linuxImage));
+  assert.throws(() => validateImageList(mutable, source), /must be a ghcr\.io\/trycua digest ref/);
+  const thirdParty = variant((l) => (l.images[index].ref = `docker.io/library/ubuntu@sha256:${'a'.repeat(64)}`));
+  assert.throws(() => validateImageList(thirdParty, source), /must be a ghcr\.io\/trycua digest ref/);
+  const shortDigest = variant((l) => (l.images[index].ref = 'ghcr.io/trycua/linux@sha256:73fbabb8'));
+  assert.throws(() => validateImageList(shortDigest, source), /must be a ghcr\.io\/trycua digest ref/);
+  const published = variant((l) => (l.images[index].published = true));
+  assert.throws(() => validateImageList(published, source), /must not be published/);
+  for (const picker of [true, undefined]) {
+    const offered = variant((l) => {
+      const group = l.groups.find((g) => g.id === 'ci')!;
+      if (picker === undefined) delete group.picker;
+      else group.picker = picker;
+    });
+    assert.throws(() => validateImageList(offered, source), /ci group must set picker: false/);
+  }
+  // A digest ref stays refused in every other group.
+  const pinnedDistro = variant((l) => (l.images[index].group = 'distro'));
+  assert.throws(() => validateImageList(pinnedDistro, source), /is not a ghcr\.io\/trycua tag/);
+});
+
 test('catalog regions render published Cua images and every benchmark with its guide', () => {
   const list = loadImageList(loadSourceFacts());
   const images = renderCuaImages(list);

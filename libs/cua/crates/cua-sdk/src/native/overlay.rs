@@ -18,19 +18,23 @@
 //!    restarted through its supervisor (supervisord program, systemd unit, or
 //!    a signal and the supervisor's restart policy) in a detached session,
 //!    then this waits until a new daemon process runs the injected
-//!    executable. For any other name, processes still running an older copy
-//!    of that executable are stopped (a supervisor, or the next call,
-//!    starts the new one).
+//!    executable. The guest hashes what the selected process runs; when it
+//!    may not read that process's executable, the daemon reports its own pid
+//!    and executable hash over its authenticated `/mcp`, accepted only from
+//!    the selected process. For any other name, processes still running an
+//!    older copy of that executable are stopped (a supervisor, or the next
+//!    call, starts the new one).
 //!
 //! Known names resolve their guest path: `cua-spacesd` is the executable of
 //! the running daemon (`cua-guestd` and `cua-env-driver` in older images),
 //! `cua-driver` the one on PATH (else `/usr/local/bin/cua-driver`). Other
 //! names need `target`.
 
-use super::{Sandbox, SpacesdClient, run};
+use super::{Sandbox, SpacesdClient, SpacesdHttpHeader, SpacesdHttpRequest, run};
 use crate::{CuaError, Result};
+use serde_json::{Value, json};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Where overlay records live in the guest.
 pub const OVERLAY_RECORD_DIR: &str = "/var/lib/cua/overlays";
@@ -273,7 +277,8 @@ echo "pid=$pid"
 echo "how=$how"
 "#;
 
-/// Prints `<pid> <sha256>` of the running cua-spacesd.
+/// Prints `<pid> <sha256>` of the running cua-spacesd (`<pid>` alone when
+/// its executable cannot be read).
 const DAEMON_IDENTITY: &str = r#"d=$(cua_daemon) || exit 1
 pid=${d%% *}
 echo "$pid $(cua_exe_sha "$pid")"
@@ -554,6 +559,203 @@ async fn apply_one(
     })
 }
 
+/// The typed-envelope extension of the daemon's `/mcp`; its `metadata`
+/// names the answering process.
+const ENVELOPES: &str = "ai.cua.driver.envelopes";
+/// The request id of [`self_identity`]'s `metadata` envelope.
+const IDENTITY_REQUEST: &str = "overlay-identity";
+
+fn identity_error(m: impl std::fmt::Display) -> CuaError {
+    CuaError::Runtime(format!("overlay cua-spacesd identity: {m}"))
+}
+
+/// The pid and, when the guest could read the executable, the sha256 that
+/// [`DAEMON_IDENTITY`] printed.
+fn shell_identity(out: &str) -> Result<(&str, Option<&str>)> {
+    let mut parts = out.split_whitespace();
+    let pid = parts
+        .next()
+        .filter(|p| p.bytes().all(|b| b.is_ascii_digit()))
+        .ok_or_else(|| identity_error("no daemon process selected"))?;
+    Ok((pid, parts.next()))
+}
+
+/// `(pid, sha256)` of the daemon [`DAEMON_IDENTITY`] selected. When the
+/// guest may not read that process's executable (the daemon runs as another
+/// user and the kernel refuses `/proc/<pid>/exe`), the daemon measures
+/// itself ([`self_identity`]), accepted only when it is the selected pid.
+async fn daemon_identity(sandbox: &Sandbox, out: &str) -> Result<(String, String)> {
+    let (pid, sha) = shell_identity(out)?;
+    if let Some(sha) = sha {
+        return Ok((pid.to_string(), sha.to_string()));
+    }
+    let env = sandbox.spacesd(Some(5_000)).await?;
+    let (answered, sha) = self_identity(&env).await?;
+    if answered != pid {
+        return Err(identity_error(format!(
+            "pid {answered} answered, the selected daemon is pid {pid}"
+        )));
+    }
+    Ok((answered, sha))
+}
+
+fn header(name: &str, value: &str) -> SpacesdHttpHeader {
+    SpacesdHttpHeader {
+        name: name.into(),
+        value: value.into(),
+    }
+}
+
+/// POSTs one JSON-RPC message or batch to the daemon's `/mcp` with `env`'s
+/// credentials; returns the MCP session it names and its answer.
+async fn mcp_post(
+    env: &SpacesdClient,
+    session: Option<&str>,
+    body: &Value,
+) -> Result<(Option<String>, Value)> {
+    let mut headers = vec![
+        header("content-type", "application/json"),
+        header("accept", "application/json, text/event-stream"),
+    ];
+    if let Some(s) = session {
+        headers.push(header("mcp-session-id", s));
+    }
+    let reply = env
+        .http(SpacesdHttpRequest {
+            method: "POST".into(),
+            path: "/mcp".into(),
+            headers,
+            body: body.to_string().into_bytes(),
+            timeout_ms: Some(20_000),
+            max_response_bytes: Some(1 << 20),
+        })
+        .await?;
+    if reply.status != 200 {
+        return Err(identity_error(format!(
+            "/mcp answered HTTP {}",
+            reply.status
+        )));
+    }
+    let session = reply
+        .headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("mcp-session-id"))
+        .map(|h| h.value.clone());
+    let value = serde_json::from_slice(&reply.body)
+        .map_err(|_| identity_error("/mcp answered something other than JSON"))?;
+    Ok((session, value))
+}
+
+/// The `result` of the answer to request `id`, refusing an error.
+fn rpc_result(answer: &Value, id: u64) -> Result<&Value> {
+    let item = match answer {
+        Value::Array(items) => items.iter().find(|r| r["id"] == id),
+        single if single["id"] == id => Some(single),
+        _ => None,
+    }
+    .ok_or_else(|| identity_error(format!("no answer to request {id}")))?;
+    if !item["error"].is_null() {
+        return Err(identity_error(format!(
+            "request {id} failed: {}",
+            item["error"]["message"].as_str().unwrap_or("error")
+        )));
+    }
+    Ok(&item["result"])
+}
+
+/// `(pid, sha256)` from [`self_identity`]'s batch: the `metadata` envelope
+/// (request 3) and `health_report` (request 4).
+fn parse_self_identity(batch: &Value) -> Result<(String, String)> {
+    if !batch.is_array() {
+        return Err(identity_error("/mcp did not answer the batch"));
+    }
+    let meta = rpc_result(batch, 3)?;
+    if meta["ok"] != true || meta["request_id"] != IDENTITY_REQUEST {
+        return Err(identity_error(format!(
+            "metadata refused ({})",
+            meta["error_code"].as_str().unwrap_or("no result")
+        )));
+    }
+    let pid = meta["result"]["pid"]
+        .as_u64()
+        .filter(|p| *p > 0)
+        .ok_or_else(|| identity_error("metadata names no pid"))?;
+    let health = rpc_result(batch, 4)?;
+    let sha = health["structuredContent"]["build"]["exe_sha256"]
+        .as_str()
+        .unwrap_or_default();
+    if health["isError"] == true
+        || sha.len() != 64
+        || !sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(identity_error("health_report names no executable sha256"));
+    }
+    Ok((pid.to_string(), sha.to_string()))
+}
+
+/// Asks the daemon answering `env` which process it is and what it runs.
+/// One authenticated `/mcp` batch carries the typed-envelope `metadata` (its
+/// pid) and `health_report` (its build, with the sha256 of `/proc/self/exe`
+/// hashed inside the daemon), so both come from the same process. The MCP
+/// session is deleted afterwards, whatever happened.
+async fn self_identity(env: &SpacesdClient) -> Result<(String, String)> {
+    let initialize = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": {"name": "cua-overlay", "version": env!("CARGO_PKG_VERSION")}}});
+    let (session, init) = mcp_post(env, None, &initialize).await?;
+    let session = session.ok_or_else(|| identity_error("/mcp named no session"))?;
+    let measured = measure_in_session(env, &session, &init).await;
+    // Deleting the session closes its envelope connection too.
+    let _ = env
+        .http(SpacesdHttpRequest {
+            method: "DELETE".into(),
+            path: "/mcp".into(),
+            headers: vec![header("mcp-session-id", &session)],
+            body: Vec::new(),
+            timeout_ms: Some(5_000),
+            max_response_bytes: Some(4096),
+        })
+        .await;
+    measured
+}
+
+/// [`self_identity`] within MCP session `session`, whose `initialize`
+/// answered `init`.
+async fn measure_in_session(
+    env: &SpacesdClient,
+    session: &str,
+    init: &Value,
+) -> Result<(String, String)> {
+    if rpc_result(init, 1)?["capabilities"]["experimental"][ENVELOPES].is_null() {
+        return Err(CuaError::HostCapabilityMissing(format!(
+            "overlay cua-spacesd identity: the daemon's /mcp does not offer {ENVELOPES}"
+        )));
+    }
+    let open = json!({"jsonrpc": "2.0", "id": 2, "method": "cua/driver/v1/open", "params": {}});
+    let (_, open) = mcp_post(env, Some(session), &open).await?;
+    let open = rpc_result(&open, 2)?;
+    let (Some(connection), Some(generation)) =
+        (open["connection_id"].as_str(), open["generation"].as_str())
+    else {
+        return Err(identity_error("no envelope connection opened"));
+    };
+    let deadline = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default()
+        + 30_000;
+    let batch = json!([
+        {"jsonrpc": "2.0", "id": 3, "method": "cua/driver/v1/exchange", "params": {
+            "connection_id": connection, "generation": generation,
+            "envelope": {"envelope_version": 1, "request_id": IDENTITY_REQUEST,
+                "operation": "metadata", "deadline_unix_ms": deadline}}},
+        {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {
+            "name": "health_report", "arguments": {"include": ["binary_version"]}}},
+    ]);
+    let (_, answer) = mcp_post(env, Some(session), &batch).await?;
+    parse_self_identity(&answer)
+}
+
 /// Restarts the guest's cua-spacesd and waits (bounded by `deadline`)
 /// until a new process runs `sha256`.
 async fn restart_daemon(
@@ -565,7 +767,8 @@ async fn restart_daemon(
     let identity = format!("{FIND_DAEMON}{DAEMON_IDENTITY}");
     // Already running this build (the same overlay applied twice): no restart.
     if let Ok(out) = guest.sh(identity.clone(), "identity").await
-        && out.split_whitespace().nth(1) == Some(sha256)
+        && let Ok((_, sha)) = daemon_identity(sandbox, &out).await
+        && sha == sha256
     {
         return Ok(String::new());
     }
@@ -598,10 +801,12 @@ async fn restart_daemon(
                 Err(e) => Err(e),
             },
         };
+        let probe = match probe {
+            Ok(out) => daemon_identity(sandbox, &out).await,
+            Err(e) => Err(e),
+        };
         match probe {
-            Ok(out) => {
-                let mut parts = out.split_whitespace();
-                let (pid, sha) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+            Ok((pid, sha)) => {
                 if pid != old_pid && sha == sha256 {
                     return Ok(how);
                 }
@@ -862,6 +1067,106 @@ supervisorctl() {
                 assert!(!String::from_utf8_lossy(&out.stderr).contains("sleep 1;"));
             }
         }
+    }
+
+    /// The message of a refusal; anything else fails the test.
+    fn refusal<T: std::fmt::Debug>(got: Result<T>) -> String {
+        match got {
+            Err(CuaError::Runtime(m)) => m,
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shell_identity_reads_pid_and_optional_hash() {
+        assert_eq!(shell_identity("30 abc\n").unwrap(), ("30", Some("abc")));
+        // The executable could not be read: the pid alone.
+        assert_eq!(shell_identity("30 \n").unwrap(), ("30", None));
+        for bad in ["", "\n", "x30 abc"] {
+            let m = refusal(shell_identity(bad));
+            assert!(m.contains("no daemon process selected"), "{bad:?}: {m}");
+        }
+    }
+
+    const SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn rpc_error(id: u64, message: &str) -> Value {
+        json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": message}})
+    }
+
+    /// [`parse_self_identity`] of a healthy answer changed by `edit`.
+    fn self_report(edit: fn(&mut Value)) -> Result<(String, String)> {
+        let mut batch = json!([
+            {"jsonrpc": "2.0", "id": 3, "result": {"envelope_version": 1,
+                "request_id": IDENTITY_REQUEST, "ok": true, "completion_known": true,
+                "result": {"pid": 4242, "driver_version": "0.0.0"}}},
+            {"jsonrpc": "2.0", "id": 4, "result": {"isError": false, "content": [],
+                "structuredContent": {"build": {"exe_sha256": SHA}}}},
+        ]);
+        edit(&mut batch);
+        parse_self_identity(&batch)
+    }
+
+    fn set_sha(batch: &mut Value, sha: Value) {
+        batch[1]["result"]["structuredContent"]["build"]["exe_sha256"] = sha;
+    }
+
+    fn refuse_metadata(batch: &mut Value) {
+        batch[0]["result"]["ok"] = json!(false);
+        batch[0]["result"]["error_code"] = json!("deadline_exceeded");
+    }
+
+    #[test]
+    fn self_identity_binds_pid_and_hash_or_refuses() {
+        let good = self_report(|_| {}).unwrap();
+        assert_eq!(good, ("4242".to_string(), SHA.to_string()));
+        let refused = |edit: fn(&mut Value), why: &str| {
+            let m = refusal(self_report(edit));
+            assert!(m.contains(why), "{why}: {m}");
+        };
+        refused(|b| *b = b[0].clone(), "did not answer the batch");
+        refused(|b| b[0]["id"] = json!(9), "no answer to request 3");
+        refused(
+            |b| b[0] = rpc_error(3, "stale_connection"),
+            "3 failed: stale_connection",
+        );
+        refused(refuse_metadata, "metadata refused (deadline_exceeded)");
+        refused(
+            |b| b[0]["result"]["request_id"] = json!("other"),
+            "metadata refused",
+        );
+        refused(
+            |b| b[0]["result"]["result"]["pid"] = json!(0),
+            "metadata names no pid",
+        );
+        refused(
+            |b| b[0]["result"]["result"] = json!({}),
+            "metadata names no pid",
+        );
+        refused(|b| b[1]["id"] = json!(9), "no answer to request 4");
+        refused(
+            |b| b[1] = rpc_error(4, "unknown tool"),
+            "request 4 failed: unknown tool",
+        );
+        let unreadable = "health_report names no executable sha256";
+        refused(|b| b[1]["result"]["isError"] = json!(true), unreadable);
+        refused(
+            |b| b[1]["result"]["structuredContent"] = json!({}),
+            unreadable,
+        );
+        refused(|b| set_sha(b, json!("")), unreadable);
+        refused(|b| set_sha(b, json!(SHA.to_uppercase())), unreadable);
+        refused(|b| set_sha(b, json!(&SHA[..63])), unreadable);
+    }
+
+    #[test]
+    fn rpc_results_refuse_errors_and_missing_answers() {
+        let init = json!({"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}});
+        assert!(rpc_result(&init, 1).unwrap()["capabilities"][ENVELOPES].is_null());
+        let m = refusal(rpc_result(&init, 2));
+        assert!(m.contains("no answer to request 2"), "{m}");
+        let m = refusal(rpc_result(&rpc_error(1, "Invalid Request"), 1));
+        assert!(m.contains("request 1 failed: Invalid Request"), "{m}");
     }
 
     #[test]

@@ -1,10 +1,14 @@
 name: "CI: Image doctor with the driver and daemon under test"
 
 # Dogfoods the cua-sandbox action: builds cua-spacesd, cua-driver and the cua
-# CLI from this commit, injects both binaries into the canonical Linux image
-# (ghcr.io/trycua/linux:24.04, locally on the runner) and runs the full image
-# doctor against them. Expectations pin the running builds to this commit, so
-# the job fails if the image's bundled (older) daemon or driver is what runs.
+# CLI from this commit, injects both binaries into the full-tier Linux image
+# (locally on the runner) and runs the full image doctor against them.
+# Expectations pin the running builds to this commit, so the job fails if the
+# image's bundled (older) daemon or driver is what runs.
+#
+# IMAGE is the CI fixture of libs/images/sandbox-images.json: the image as
+# published with cua-spacesd 0.5.3, pinned by digest, whose doctor claims are
+# the ones this source implements. The moving tag follows newer releases.
 #
 # `stale` proves the protection bites: the same image without overlays must
 # fail the same expectations.
@@ -40,7 +44,7 @@ env:
   # Cua programs and packages run here never send usage telemetry.
   CUA_TELEMETRY: "0"
   DO_NOT_TRACK: "1"
-  IMAGE: ghcr.io/trycua/linux:24.04
+  IMAGE: ghcr.io/trycua/linux@sha256:73fbabb8903f1b90ab94256d63548da9bf5a8b3276dbc5988f5d81230f7e2bdf
 
 jobs:
   doctor:
