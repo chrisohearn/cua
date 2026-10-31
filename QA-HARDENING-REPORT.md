@@ -225,3 +225,5 @@ Host Cua Driver updated, 2026-10-31. The running build (0.35.4-hyprland-811d8cd4
   - #6255: readiness after post-boot layers (68770d26b).
   - #6254: link-staged restore, repair of missing records, and staged-link cleanup (1c610a3d5, f22e499a9).
   - All are mutation-checked. CI on all three awaits maintainer approval of fork workflows.
+
+Peer readback, 2026-10-31: the Ponytail root published its original cleanup as draft trycua/cua#6256 (nine paths, mergeable) and closed fork PR #10 unmerged, linking to the successor. It reports no overlap with #6253, #6254 or #6255, and no local process or reservation held. Further #6254 review follow-up: f4322b132 restores a staged record that the sealed index still references, on unlock and before each sweep (171 tests). All four contributor PRs now wait on trycua maintainer approval of fork workflows and on review.
