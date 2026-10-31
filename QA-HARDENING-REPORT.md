@@ -198,3 +198,18 @@ Owner instruction "Fix all" (Chris, 2026-10-31) unparked the gated items. Outcom
 - New blocker: GitHub starts no new Actions runs for this account. workflow_dispatch returns 422 "Actions has been disabled for this repository", and PRs #13 and #15 report no checks; only reruns of existing runs execute. That needs the account owner, so #13 and #15 cannot meet the CI gate until Actions is restored.
 
 Actions restored, 2026-10-31. Correction: the CI stall was not account-wide. GitHub had disabled workflows on this fork for wasted compute ("Workflows on this fork have been disabled"); other chrisohearn repositories kept running. With the owner's choice ("Enable, schedules off"), the 18 registered scheduled workflows were disabled through the API, Actions was re-enabled on the fork's Actions page, and PRs #13 and #15 were closed and reopened to trigger PR CI. The Hyprland requalify workflow was enabled only to dispatch run 41233784915 on `fix/12-hyprland-0.57` (publish_manifest=false), then disabled again. Three scheduled workflow files on main are not yet registered by GitHub: cd-image-macos.yml, ci-cua-driver-installer-compat.yml and ci-test-models.yml. They cannot run until a push to main registers them, and they must be disabled after the next merge to main.
+
+Fork refactor, 2026-10-31 (owner decisions). Chris has pull-only access to trycua/cua, so the fork stays as a contribution fork.
+- Fork main was reset to mirror trycua/cua main at d1fe368a6, using force-with-lease from d813aa2. The old main is kept as `archive/fork-main-20261031` (d813aa2), which holds every count, merge and report above. All 51 upstream scheduled workflows are disabled on the fork. The 46 push-triggered runs started by the reset were cancelled.
+- Upstream PRs from fork branches, each re-tested on d1fe368a6:
+  - trycua/cua#6253, Hyprland input detection. Supersedes #6153 and refs #6232 and #5751. Build with -Werror passed against 0.57.0; CTest 20/20.
+  - trycua/cua#6254, Keyvault batch-commit consistency. 167 tests; clippy and fmt clean.
+  - trycua/cua#6255, QEMU registry layers. 27 adapter tests pass, and 9 fail when the fix is reverted.
+  - The fork Fleet fix (PR4) is obsolete upstream, where the Fleet adapters were removed.
+  - Fork PRs #15 and #16 are closed as superseded.
+- Peer claim recorded: the Ponytail root is preparing its original benchmark-wrapper and teleport-crypto cleanup as a separate upstream contribution. It covers four agent files, `cua-teleport/Cargo.toml` and matching lock edges, with no overlap with these PRs. Its fork PR #10 is not merged here.
+- Host cleanup:
+  - Removed the Omarchy `cua-driver-bin` 0.33.4 package. It shadowed the running 0.35.4 build on PATH and nothing referenced it.
+  - Deleted six fork branches whose work is merged or superseded.
+  - Removed finished worktrees and about 11 GB of build caches.
+- The Cua Driver rebuild from upstream main plus PRs #4934 and #4931 is in progress. A trial merge conflicts in 16 hunks across the browser consent and existing-profile code.
