@@ -869,6 +869,75 @@ fn never_ready(name: &str) -> CreateOptions {
 }
 
 #[tokio::test]
+async fn fleet_readiness_cleanup_preserves_reattached_claims() {
+    for explicit_pool in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = fleet_fake();
+        let fleet = fake.client();
+        let pool = explicit_pool.then_some("cua-e2e-borrowed-pool");
+        if let Some(pool) = pool {
+            fleet
+                .apply_pool(&cua_fleet::PoolSpec::new(pool, IMAGE).services([("server", 8000u16)]))
+                .await
+                .unwrap();
+        }
+        let sbx = Sandboxes::builder()
+            .fleet(fleet)
+            .state_dir(dir.path().join("sandboxes"))
+            .build();
+        let name = "cua-e2e-borrowed";
+        let options = || {
+            let mut options = CreateOptions::new(ProviderKind::Fleet, IMAGE)
+                .name(name)
+                .service("server", 8000)
+                .wait_for(Probe::Http {
+                    port: 8000,
+                    path: "/status".into(),
+                    status: Some(200),
+                });
+            options.fleet.pool = pool.map(str::to_owned);
+            options.ready_timeout = Duration::from_millis(300);
+            options
+        };
+        let original = sbx.create(options()).await.unwrap();
+        let namespace = original.fleet_sandbox().unwrap().namespace.clone();
+        // An attachment's stored credential belongs to the existing claim.
+        sbx.state()
+            .update(
+                name,
+                serde_json::from_value(serde_json::json!({
+                    "env_token": "existing-claim-token-0123456789"
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        let state = sbx.state().load_raw(name).unwrap();
+        let before = fake.requests().len();
+        fake.faults.lock().unwrap().service_status = Some(503);
+
+        let error = sbx.create(options()).await.unwrap_err();
+        assert!(matches!(error, Error::Timeout(_)), "{error:?}");
+        assert!(fake.exists("claim", &namespace, name));
+        assert_eq!(sbx.state().load_raw(name), Some(state));
+        assert_eq!(
+            fake.requests()[before..]
+                .iter()
+                .filter(|r| r.method == "DELETE")
+                .count(),
+            0,
+            "failed reattachment must not delete the existing claim"
+        );
+        fake.faults.lock().unwrap().service_status = Some(200);
+        let reattached = sbx.create(options()).await.unwrap();
+        assert_eq!(
+            reattached.env_token().as_deref(),
+            Some("existing-claim-token-0123456789")
+        );
+        original.delete().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn fleet_named_sandbox_that_fails_readiness_releases_its_claim() {
     let dir = tempfile::tempdir().unwrap();
     let fake = fleet_fake();

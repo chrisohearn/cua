@@ -1051,15 +1051,21 @@ impl Sandboxes {
         let (sandbox, image_ready) = crate::progress::past(Phase::Pulling, async {
             match options.provider {
                 ProviderKind::Fleet => self.create_fleet(&options).await,
-                ProviderKind::Local => self.create_local(&options).await,
-                ProviderKind::Contrib => self.create_contrib(&options).await,
+                ProviderKind::Local => self
+                    .create_local(&options)
+                    .await
+                    .map(|sandbox| (sandbox, !preexisting)),
+                ProviderKind::Contrib => self
+                    .create_contrib(&options)
+                    .await
+                    .map(|sandbox| (sandbox, true)),
                 ProviderKind::Direct => Err(Error::InvalidArgument(
                     "direct sandboxes are not created; use Sandboxes::connect_url".into(),
                 )),
             }
         })
         .await;
-        let sandbox = sandbox?;
+        let (sandbox, created) = sandbox?;
         let clock = image_ready.unwrap_or(started);
         if !options.wait_for.is_empty() {
             report(Progress::phase(Phase::WaitingForServices));
@@ -1083,7 +1089,7 @@ impl Sandboxes {
         if let Err(e) = ready {
             // A failed create releases what it made (a named sandbox's claim
             // too), unless the caller keeps it to debug.
-            if preexisting {
+            if !created {
                 tracing::warn!(sandbox = %sandbox.id(), "readiness failed; pre-existing sandbox retained");
             } else if sandbox.ephemeral || !options.keep_on_failure {
                 let id = sandbox.id();
@@ -1373,7 +1379,7 @@ impl Sandboxes {
         }
     }
 
-    async fn create_fleet(&self, o: &CreateOptions) -> Result<Sandbox> {
+    async fn create_fleet(&self, o: &CreateOptions) -> Result<(Sandbox, bool)> {
         if o.gpu.is_some() {
             return Err(Error::Unsupported {
                 provider: ProviderKind::Fleet,
@@ -1394,7 +1400,7 @@ impl Sandboxes {
         // The spacesd token of a managed-pool sandbox, delivered through the
         // claim's Secret (see `fleet_claim_token`); `None` elsewhere.
         let mut claim_token: Option<String> = None;
-        let (bound, lease, services, image_info, runtime) = match &o.fleet.pool {
+        let (bound, lease, services, image_info, runtime, created) = match &o.fleet.pool {
             // An explicit, user-owned pool: plain claim, the pool is never
             // touched.
             Some(pool) => {
@@ -1433,7 +1439,7 @@ impl Sandboxes {
                     ttl_seconds_after_created: o.fleet.ttl_seconds_after_created,
                     ..Default::default()
                 };
-                let bound = fleet.acquire(&handle.pool, claim_opts).await?;
+                let (bound, created) = fleet.acquire_with_created(&handle.pool, claim_opts).await?;
                 // A pre-existing pool's services are its template's, not
                 // the create options' defaults (`env` -> 3211).
                 let services = fleet_services(fleet, &handle.pool, &bound).await;
@@ -1448,7 +1454,7 @@ impl Sandboxes {
                             None
                         }
                     };
-                (bound, None, services, image_info, pool_runtime)
+                (bound, None, services, image_info, pool_runtime, created)
             }
             None => {
                 let warm = o.default_warm();
@@ -1476,6 +1482,7 @@ impl Sandboxes {
                 let services = key.services.clone();
                 let pool_runtime = Some(key.runtime.clone());
                 let mut claim = self.pools()?.acquire(key, opts).await?;
+                let created = !claim.reattached;
                 // An ephemeral claim goes with its handle; a named one
                 // outlives this process until its TTL (reattach with
                 // `connect`, extend with `keep_alive`).
@@ -1486,12 +1493,29 @@ impl Sandboxes {
                     services,
                     image_info,
                     pool_runtime,
+                    created,
                 )
             }
         };
         let pool = bound.namespace.clone();
         let name = o.name.clone().unwrap_or_else(|| bound.claim.clone());
-        if !ephemeral {
+        let previous = self
+            .inner
+            .state
+            .load(&bound.claim)
+            .filter(|state| matches!(state, SandboxState::Fleet(f) if f.pool_name == pool));
+        if !created {
+            // A reattached claim never received the newly proposed token.
+            claim_token = previous.as_ref().and_then(|state| match state {
+                SandboxState::Fleet(f) => f
+                    .extra
+                    .get("env_token")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                _ => None,
+            });
+        }
+        if !ephemeral && (created || previous.is_none()) {
             self.inner.state.save_fleet_claim(&bound.claim, &pool)?;
             if o.fleet.pool.is_some() {
                 // A named pool's resolved template image, for a reattach.
@@ -1516,21 +1540,24 @@ impl Sandboxes {
                 }
             }
         }
-        Ok(Sandbox {
-            mgr: self.clone(),
-            name,
-            ephemeral,
-            env_token: claim_token.or_else(|| o.env_token.clone()),
-            bootstrap_token: Default::default(),
-            services,
-            image_info,
-            target: Target::Fleet {
-                pool,
-                bound,
-                lease,
-                runtime,
+        Ok((
+            Sandbox {
+                mgr: self.clone(),
+                name,
+                ephemeral,
+                env_token: claim_token.or_else(|| o.env_token.clone()),
+                bootstrap_token: Default::default(),
+                services,
+                image_info,
+                target: Target::Fleet {
+                    pool,
+                    bound,
+                    lease,
+                    runtime,
+                },
             },
-        })
+            created,
+        ))
     }
 
     async fn create_local(&self, o: &CreateOptions) -> Result<Sandbox> {
