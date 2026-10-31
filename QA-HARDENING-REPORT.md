@@ -213,3 +213,15 @@ Fork refactor, 2026-10-31 (owner decisions). Chris has pull-only access to trycu
   - Deleted six fork branches whose work is merged or superseded.
   - Removed finished worktrees and about 11 GB of build caches.
 - The Cua Driver rebuild from upstream main plus PRs #4934 and #4931 is in progress. A trial merge conflicts in 16 hunks across the browser consent and existing-profile code.
+
+Host Cua Driver updated, 2026-10-31. The running build (0.35.4-hyprland-811d8cd4, unmerged branch) was replaced by 0.38.0 built from d834330d0. That is a merge of trycua/cua main d1fe368a6 with Chris's PR #4934, which includes #4931.
+- Release build with `--features cua-driver/portal-input`. Tests: cua-driver-core 1157 passed, platform-linux 753 passed (one Xvfb-only test not run), cua-driver 460 passed. Clippy reports 15 findings; every one is blamed to an upstream commit.
+- Installed side by side under `~/.cua-driver/packages/releases/0.38.0-main-d834330-*`, and `current` was switched atomically. Rollback: point `current` back at `0.35.4-hyprland-811d8cd4`, which is kept.
+- cua-driver.service and agent-desktop-cua were restarted. Checks after the restart: the host socket answers; `agent-desktop doctor` is all ok; on the agent display, existing-profile prepare, exact bind and a semantic_v2 snapshot all work. No Hyprland config edit or reload happened.
+- The merge was fast-forwarded onto PR #4934's branch, which is now mergeable, and a summary was posted there.
+- Removed the shadowing Omarchy `cua-driver-bin` 0.33.4 package and pruned 13 old driver releases (898M → 123M).
+- Upstream review follow-ups:
+  - #6253: release allowlist (737b0e618).
+  - #6255: readiness after post-boot layers (68770d26b).
+  - #6254: link-staged restore, repair of missing records, and staged-link cleanup (1c610a3d5, f22e499a9).
+  - All are mutation-checked. CI on all three awaits maintainer approval of fork workflows.
