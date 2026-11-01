@@ -55,8 +55,10 @@ No product, config or CI file differs from upstream.
 
 ### In the installed host build (`feat/cua-headless-isolated-5156e71a`, commit `d834330d0`)
 
-That commit merges upstream `d1fe368a6` with two stacked upstream PRs. The PR
-branch is also the integration branch for the host build.
+That commit merges upstream `d1fe368a6` with two stacked upstream PRs.
+`feat/cua-headless-isolated-5156e71a` is the head branch of PR #4934. It is also
+the integration branch for the host build. Build only from that remote branch.
+Local `up/*` branches in shared clones are other sessions' scratch work.
 
 **1. Existing-profile browser setup on Hyprland ([trycua/cua#4931](https://github.com/trycua/cua/pull/4931), branch `fix/hyprland-existing-profile-5156e71a`).**
 Attaches the browser tools to an already-running, signed-in Chrome on Hyprland.
@@ -78,6 +80,7 @@ cua-driver call get_browser_state '{"pid":<chrome pid>,"window_id":<window id>,"
 
 Get `pid` and `window_id` from `cua-driver call list_windows '{"app":"Google Chrome"}' --socket …`.
 The full contract is in `libs/cua-driver/rust/Skills/cua-driver/BROWSER.md` (section "Existing profile").
+Until #4934 merges, its "Driver-owned headless browser" section exists only on the build branch.
 
 **2. Driver-owned headless browser ([trycua/cua#4934](https://github.com/trycua/cua/pull/4934), stacked on #4931).**
 Adds `"headless":true` to an `isolated_new` `browser_prepare`. The driver launches
@@ -104,12 +107,15 @@ with `isolated_named`, `existing_profile`, `pid`, `window_id`, or without `allow
 
 ### Open upstream PRs not in the host build
 
+These fork branch names start with `upstream/`, so they look like refs on the
+`upstream` remote. They are not: check them out as `origin/upstream/<name>`.
+
 | PR | Fork branch | What it fixes |
 | --- | --- | --- |
-| [trycua/cua#6253](https://github.com/trycua/cua/pull/6253) | `upstream/hyprland-input-api-detect` | Hyprland plugin detects input internals instead of pinning 0.56.2. Needed to load the plugin on Hyprland 0.57. |
-| [trycua/cua#6254](https://github.com/trycua/cua/pull/6254) | `upstream/keyvault-upsert-commit-cleanup` | Keyvault keeps payloads consistent when a batch commit fails. |
-| [trycua/cua#6255](https://github.com/trycua/cua/pull/6255) | `upstream/qemu-registry-layers` | Sandbox keeps registry identity for QEMU image layers. |
-| [trycua/cua#6256](https://github.com/trycua/cua/pull/6256) (draft) | `contrib/ponytail-cleanup-20261031` | Shares benchmark handlers and trims teleport dependencies. |
+| [trycua/cua#6253](https://github.com/trycua/cua/pull/6253) | `origin/upstream/hyprland-input-api-detect` | Hyprland plugin detects input internals instead of pinning 0.56.2. Needed to load the plugin on Hyprland 0.57. |
+| [trycua/cua#6254](https://github.com/trycua/cua/pull/6254) | `origin/upstream/keyvault-upsert-commit-cleanup` | Keyvault keeps payloads consistent when a batch commit fails. |
+| [trycua/cua#6255](https://github.com/trycua/cua/pull/6255) | `origin/upstream/qemu-registry-layers` | Sandbox keeps registry identity for QEMU image layers. |
+| [trycua/cua#6256](https://github.com/trycua/cua/pull/6256) (draft) | `origin/contrib/ponytail-cleanup-20261031` | Shares benchmark handlers and trims teleport dependencies. |
 
 ### Fork repository settings
 
@@ -131,19 +137,25 @@ separate worktree, never in the main checkout:
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
+git fetch origin
+# First time:
 git worktree add --detach ~/.cache/cua-host-build origin/feat/cua-headless-isolated-5156e71a
+# Later rebuilds, when the worktree already exists:
+git -C ~/.cache/cua-host-build checkout --detach origin/feat/cua-headless-isolated-5156e71a
 cd ~/.cache/cua-host-build/libs/cua-driver/rust
 cargo build --locked -p cua-driver -p cursor-theme-cli --release --features cua-driver/portal-input
 target/release/cua-driver --version        # cua-driver 0.38.0
 ```
 
 This mirrors the Linux release job in `.github/workflows/cd-rust-cua-driver.yml`.
-`portal-input` is the feature ordinary Linux releases ship with. A cold build takes about 1.5 minutes on this machine.
+`portal-input` is the feature ordinary Linux releases ship with. The job also
+builds `cua-driver-sdk` and passes `--target`. The host install needs neither,
+because the daemons use only `cua-driver`, `cua-cursor-theme` and `wayland-helper`. A cold build takes about 1.5 minutes on this machine.
 
 ### Test
 
 Plain `cargo test` is hermetic (see `AGENTS.md`, "Cua Driver test ownership").
-Focused tests for our two changes:
+Focused tests for our two changes, run from `libs/cua-driver/rust`:
 
 ```bash
 cargo test --locked -p cua-driver-core --lib browser::
@@ -153,7 +165,8 @@ cargo test --locked -p platform-linux --features portal-input --lib browser_setu
 The full `platform-linux` suite needs `Xvfb` for
 `input::own_dialog_tests::focus_restore_leaves_focus_on_a_dialog_the_app_opened`.
 `Xvfb` is not installed on this host, so that one test fails here on upstream too.
-For the plugin, build against the installed Hyprland headers (`pkg-config --modversion hyprland`):
+For the plugin, build against the installed Hyprland headers (`pkg-config --modversion hyprland`).
+Run this from the repository root of an `origin/upstream/hyprland-input-api-detect` worktree:
 
 ```bash
 cd libs/cua-driver/hyprland-plugin
@@ -162,13 +175,18 @@ cmake --build build && ctest --test-dir build --output-on-failure
 ```
 
 On upstream `main` this configure step stops with `Input is pinned to Hyprland 0.56.2`
-on a 0.57 host. Use the `upstream/hyprland-input-api-detect` branch until #6253 merges.
+on a 0.57 host. Use `origin/upstream/hyprland-input-api-detect` until #6253 merges.
+Installing the plugin means copying `build/cua-hyprland-plugin.so` to a new
+`~/.local/lib/cua/hyprland/<driver version>-hyprland-<hyprland version>/` directory
+and pointing `~/.config/hypr/cua.lua` at it. That edits Hyprland config, so do it
+only when Chris asks, and follow the stream-lease rule below first.
 
 ### Install a new host build
 
 This changes the live daemons, so do it only when Chris asks for a driver update.
 Name the slot `<version>-main-<short sha>-<target>`. Why: any label between the version and
 the target keeps `cua-driver-autoupdate` from replacing the custom build with a stock release.
+The older `0.35.4-hyprland-811d8cd4` slot used a different label for the same reason.
 
 ```bash
 cd ~/.cache/cua-host-build/libs/cua-driver/rust
@@ -203,7 +221,9 @@ hyprctl plugin list
 
 ## Sync from upstream
 
-`main` is upstream plus one docs commit, so sync by merging, never by resetting.
+`main` is upstream plus the commit that adds this guide, so sync by merging, never by resetting.
+Push a clean sync merge straight to `main`; it adds no fork content, so it needs no PR.
+Any change to fork content, such as this guide, goes through a PR.
 
 ```bash
 git fetch upstream main && git fetch origin main
