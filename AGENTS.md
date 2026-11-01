@@ -163,3 +163,8 @@ Describe a component as shipped when its own release artifacts exist and its
 canonical distribution path resolves them. Do not add a separate
 "promoted to GitHub Latest/stable" requirement unless that component's
 distribution code explicitly uses one.
+
+<!-- fork:start -->
+This is `chrisohearn/cua`, a fork of `trycua/cua`. It is the head repository for our upstream PRs and the source of the Cua Driver build behind this Omarchy host's daemon and agent desktop.
+Read [`FORK.md`](FORK.md) before working here: it covers what differs from upstream, how to build, install and verify our build, and how to sync.
+<!-- fork:end -->
