@@ -26,7 +26,7 @@ All paths are on the Omarchy workstation, user `cohearn`, `HOME=/home/cohearn`.
 
 | What | Where | Notes |
 | --- | --- | --- |
-| Installed driver | `~/.cua-driver/packages/current` → `releases/0.38.0-main-d834330-x86_64-unknown-linux-gnu` | Built from fork commit `d834330d0`. Previous build kept: `releases/0.35.4-hyprland-811d8cd4-x86_64-unknown-linux-gnu`. |
+| Installed driver | `~/.cua-driver/packages/current` → `releases/0.38.0-main-260833c-x86_64-unknown-linux-gnu` | Built from fork commit `260833cfc`. Previous build kept: `releases/0.38.0-main-d834330-x86_64-unknown-linux-gnu`. |
 | `cua-driver` on `PATH` | `~/.local/bin/cua-driver` → `~/.cua-driver/packages/current/cua-driver` | Every consumer below resolves the binary through this symlink. |
 | Host daemon | `cua-driver.service` (`~/.config/systemd/user/cua-driver.service`) | `cua-driver serve --permission-mode unrestricted --dangerously-bypass-approvals`, `CUA_DRIVER_RS_ENABLE_WAYLAND=1`. Socket `~/.cache/cua-driver/cua-driver.sock`. Drives Chris's own screen; use it only when he asks. |
 | Agent desktop daemon | `agent-desktop-cua.service`, part of `agent-desktop.target` | `agent-desktop run cua` starts `cua-driver serve --socket $XDG_RUNTIME_DIR/agent-desktop/cua.sock … --no-overlay` on invisible display `:42`. Agents do all browser work here. |
@@ -53,11 +53,13 @@ gh pr list -R trycua/cua --author chrisohearn --state open  # our upstream PRs
 Only docs: `FORK.md` and the `<!-- fork:start -->`…`<!-- fork:end -->` block at the end of `AGENTS.md`.
 No product, config or CI file differs from upstream.
 
-### In the installed host build (`feat/cua-headless-isolated-5156e71a`, commit `d834330d0`)
+### In the installed host build (`host/cua-driver-deep-replies`, commit `260833cfc`)
 
-That commit merges upstream `d1fe368a6` with two stacked upstream PRs.
-`feat/cua-headless-isolated-5156e71a` is the head branch of PR #4934. It is also
-the integration branch for the host build. Build only from that remote branch.
+The host branch is `feat/cua-headless-isolated-5156e71a` (commit `d834330d0`, which
+merges upstream `d1fe368a6` with two stacked upstream PRs) plus a cherry-pick of a
+third upstream PR. Build only from the remote host branch.
+`feat/cua-headless-isolated-5156e71a` is the head branch of PR #4934, so never push
+host-only fixes to it; they would join that PR. Cherry-pick them onto the host branch instead.
 Local `up/*` branches in shared clones are other sessions' scratch work.
 
 **1. Existing-profile browser setup on Hyprland ([trycua/cua#4931](https://github.com/trycua/cua/pull/4931), branch `fix/hyprland-existing-profile-5156e71a`).**
@@ -105,6 +107,11 @@ session that prepared it. Each `get_browser_state` mints fresh `target_id` and
 `"input_route":"dom_event"`, because there is no screen. `headless` is refused
 with `isolated_named`, `existing_profile`, `pid`, `window_id`, or without `allow_launch`.
 
+**3. Deep CDP replies ([trycua/cua#6338](https://github.com/trycua/cua/pull/6338), branch `fix/cdp-deep-dom-replies`).**
+`get_browser_state` no longer stalls for 20 s on pages deeper than about 63 elements,
+such as ChatGPT. Why: serde_json's default 128-level limit rejected full-depth
+`DOM.getDocument` replies, and the CDP reader dropped them until the call timed out.
+
 ### Open upstream PRs not in the host build
 
 These fork branch names start with `upstream/`, so they look like refs on the
@@ -139,9 +146,9 @@ separate worktree, never in the main checkout:
 export PATH="$HOME/.cargo/bin:$PATH"
 git fetch origin
 # First time:
-git worktree add --detach ~/.cache/cua-host-build origin/feat/cua-headless-isolated-5156e71a
+git worktree add --detach ~/.cache/cua-host-build origin/host/cua-driver-deep-replies
 # Later rebuilds, when the worktree already exists:
-git -C ~/.cache/cua-host-build checkout --detach origin/feat/cua-headless-isolated-5156e71a
+git -C ~/.cache/cua-host-build checkout --detach origin/host/cua-driver-deep-replies
 cd ~/.cache/cua-host-build/libs/cua-driver/rust
 cargo build --locked -p cua-driver -p cursor-theme-cli --release --features cua-driver/portal-input
 target/release/cua-driver --version        # cua-driver 0.38.0
@@ -250,8 +257,10 @@ To refresh the host build after a sync, merge `upstream/main` into
 `feat/cua-headless-isolated-5156e71a`. It already contains #4931's commits.
 Expect conflicts in the browser consent and existing-profile code under
 `libs/cua-driver/rust/crates/platform-linux/src/`. Keep upstream's behavior and
-re-apply ours on top. Then run the focused tests, push, rebuild and install as above.
-When #4931 and #4934 ship upstream, go back to the stock installer and delete both branches.
+re-apply ours on top. Push it, then reset `host/cua-driver-deep-replies` to it and
+cherry-pick #6338's commit again unless it has merged upstream. Then run the focused
+tests, push, rebuild and install as above.
+When #4931, #4934 and #6338 ship upstream, go back to the stock installer and delete their branches.
 
 ## Working rules for this fork
 
