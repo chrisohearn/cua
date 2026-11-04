@@ -128,7 +128,18 @@ These fork branch names start with `upstream/`, so they look like refs on the
 
 - **Scheduled workflows are disabled** (51 of them, via the API). Why: upstream's
   nightlies and image rebuilds burned fork compute and made GitHub disable Actions
-  on this fork on 2026-10-31. Push and pull-request workflows stay enabled.
+  on this fork on 2026-10-31. Push and pull-request workflows stay enabled,
+  except the next three.
+- **Three upstream-credential workflows are disabled** (via the API, 2026-11-03).
+  They can only fail here because the fork lacks upstream's credentials, so their
+  red runs carry no signal:
+  - `release-on-merge.yml` and `release-please.yml`: no `RELEASE_APP_ID` app secret.
+  - `cd-docs-pin-dispatch.yml`: upstream's AWS OIDC role refuses the fork.
+
+  Leave other push and pull-request workflows enabled. Their failures on the fork
+  are real test results. Fork issues opened by `report-schedule-failure` for an
+  image workflow belong upstream once the fork's `main` matches upstream; fork
+  issue #11 was closed for that reason, and upstream tracks it in trycua/cua#4806.
 - **Issues are enabled.** Upstream issues stay on `trycua/cua`; fork issues track fork-only work.
 - **Extra branches:** `archive/fork-main-20261031` (old fork `main`, keep);
   `image-doctor-ledger` (Image Doctor evidence that CI reads, keep in sync with
