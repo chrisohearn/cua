@@ -3881,55 +3881,6 @@ fn changed_pixel_count(before: &image::RgbaImage, after: &image::RgbaImage) -> u
         .count() as u64
 }
 
-fn browser_chrome_changed_pixel_center(
-    before: &image::RgbaImage,
-    after: &image::RgbaImage,
-    desktop: &ToolResponse,
-    bounds: (f64, f64, f64, f64),
-) -> Option<(f64, f64)> {
-    assert_eq!(before.dimensions(), after.dimensions());
-    let screen_width = desktop.structured()["screen_width"].as_f64()?;
-    let screen_height = desktop.structured()["screen_height"].as_f64()?;
-    let scale_x = f64::from(before.width()) / screen_width;
-    let scale_y = f64::from(before.height()) / screen_height;
-    let left = (bounds.0 * scale_x).round().max(0.0) as u32;
-    let top = (bounds.1 * scale_y).round().max(0.0) as u32;
-    let right = ((bounds.0 + bounds.2) * scale_x)
-        .round()
-        .min(f64::from(before.width())) as u32;
-    // Browser permission indicators live in the top chrome. Limiting the
-    // search excludes any unrelated page repaint below the toolbar.
-    let bottom = ((bounds.1 + bounds.3.min(120.0)) * scale_y)
-        .round()
-        .min(f64::from(before.height())) as u32;
-    let mut changed = 0_u64;
-    let mut x_sum = 0_u64;
-    let mut y_sum = 0_u64;
-    for y in top..bottom {
-        for x in left..right {
-            let before = before.get_pixel(x, y);
-            let after = after.get_pixel(x, y);
-            if before
-                .0
-                .iter()
-                .zip(after.0.iter())
-                .take(3)
-                .any(|(before, after)| before.abs_diff(*after) >= 32)
-            {
-                changed += 1;
-                x_sum += u64::from(x);
-                y_sum += u64::from(y);
-            }
-        }
-    }
-    (changed > 0).then(|| {
-        (
-            (x_sum as f64 / changed as f64) / scale_x,
-            (y_sum as f64 / changed as f64) / scale_y,
-        )
-    })
-}
-
 /// Screen-point center of the pixels that changed in the top browser chrome of
 /// two captures of the same window. Window captures exclude other processes'
 /// windows, so a system notification banner over the toolbar cannot move the
@@ -3942,8 +3893,7 @@ fn window_chrome_changed_pixel_center(
     assert_eq!(before.dimensions(), after.dimensions());
     let scale_x = f64::from(before.width()) / bounds.2;
     let scale_y = f64::from(before.height()) / bounds.3;
-    // Browser permission indicators live in the top chrome, as in
-    // `browser_chrome_changed_pixel_center`.
+    // Browser permission indicators live in the top chrome.
     let bottom = (bounds.3.min(120.0) * scale_y)
         .round()
         .min(f64::from(before.height())) as u32;
@@ -3973,6 +3923,186 @@ fn window_chrome_changed_pixel_center(
             bounds.1 + (y_sum as f64 / changed as f64) / scale_y,
         )
     })
+}
+
+/// Screen-point center of Edge's quiet permission indicator, or `None` when the
+/// request is not a pending quiet prompt. Edge titles the tab "Permission
+/// requested" and swaps the "View site information" control for an indicator in
+/// the same frame, and the desktop shows no separate prompt surface. A pending
+/// quiet state without exactly one such indicator in the same window is an
+/// error, never a guessed click target.
+fn quiet_permission_indicator(
+    before: &serde_json::Value,
+    after: &serde_json::Value,
+    desktop_changed_pixels: u64,
+    window_changed_pixels: u64,
+    minimum_desktop_to_window_ratio: u64,
+) -> Result<Option<(f64, f64)>, String> {
+    let elements =
+        |state: &serde_json::Value| state["elements"].as_array().cloned().unwrap_or_default();
+    let label = |element: &serde_json::Value| element["label"].as_str().unwrap_or("").to_owned();
+    let after_elements = elements(after);
+    let pending = after_elements.iter().any(|element| {
+        element["role"] == "TabItem" && label(element).contains("Permission requested")
+    });
+    let separate_surface = window_changed_pixels.saturating_mul(minimum_desktop_to_window_ratio)
+        < desktop_changed_pixels;
+    if !pending || separate_surface {
+        return Ok(None);
+    }
+    if before["window_id"].is_null() || before["window_id"] != after["window_id"] {
+        return Err(format!(
+            "quiet permission state spans different windows: {} then {}",
+            before["window_id"], after["window_id"]
+        ));
+    }
+    let anchors: Vec<_> = elements(before)
+        .into_iter()
+        .filter(|element| element["role"] == "Button" && label(element) == "View site information")
+        .collect();
+    let [anchor] = anchors.as_slice() else {
+        return Err(format!(
+            "expected one site information control before the request, found {}",
+            anchors.len()
+        ));
+    };
+    let anchor_frame = &anchor["screenshot_frame"];
+    let indicators: Vec<_> = after_elements
+        .iter()
+        .filter(|element| {
+            element["role"] == "Button"
+                && element["screenshot_frame"] == *anchor_frame
+                && label(element) != "View site information"
+        })
+        .collect();
+    let [indicator] = indicators.as_slice() else {
+        return Err(format!(
+            "expected one quiet permission indicator at {anchor_frame}, found {}",
+            indicators.len()
+        ));
+    };
+    let number = |value: &serde_json::Value, key: &str| value[key].as_f64();
+    let inside = match (
+        number(anchor_frame, "x"),
+        number(anchor_frame, "y"),
+        number(anchor_frame, "w"),
+        number(anchor_frame, "h"),
+        number(after, "screenshot_width"),
+        number(after, "screenshot_height"),
+    ) {
+        (Some(x), Some(y), Some(w), Some(h), Some(width), Some(height)) => {
+            x >= 0.0 && y >= 0.0 && w > 0.0 && h > 0.0 && x + w <= width && y + h <= height
+        }
+        _ => false,
+    };
+    if !inside {
+        return Err(format!(
+            "quiet permission indicator {anchor_frame} is outside the window capture"
+        ));
+    }
+    let frame = &indicator["frame"];
+    match (
+        number(frame, "x"),
+        number(frame, "y"),
+        number(frame, "w"),
+        number(frame, "h"),
+    ) {
+        (Some(x), Some(y), Some(w), Some(h)) if w > 0.0 && h > 0.0 => {
+            Ok(Some((x + w / 2.0, y + h / 2.0)))
+        }
+        _ => Err(format!(
+            "quiet permission indicator has no screen frame: {indicator}"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod quiet_permission_indicator_tests {
+    use super::quiet_permission_indicator;
+    use serde_json::{json, Value};
+
+    // Element shapes and values from the Windows Edge run on PR #22 (window
+    // 884x631; site information control at window 80,47 / screen 128,88).
+    fn site_info(label: Option<&str>) -> Value {
+        let mut element = json!({
+            "role": "Button",
+            "frame": {"x": 128, "y": 88, "w": 24, "h": 24},
+            "screenshot_frame": {"x": 80, "y": 47, "w": 24, "h": 24},
+        });
+        if let Some(label) = label {
+            element["label"] = json!(label);
+        }
+        element
+    }
+
+    fn state(window_id: u64, tab: &str, extra: Vec<Value>) -> Value {
+        let mut elements = vec![
+            json!({"role": "Edit", "label": "Address and search bar",
+                   "screenshot_frame": {"x": 112, "y": 47, "w": 501, "h": 24}}),
+            json!({"role": "TabItem", "label": tab,
+                   "screenshot_frame": {"x": 32, "y": -1, "w": 256, "h": 41}}),
+        ];
+        elements.extend(extra);
+        json!({"window_id": window_id, "screenshot_width": 884, "screenshot_height": 631, "elements": elements})
+    }
+
+    fn before() -> Value {
+        state(
+            1638934,
+            "cua-driver Web Harness",
+            vec![site_info(Some("View site information"))],
+        )
+    }
+
+    const PENDING: &str = "cua-driver Web Harness - Permission requested, press F6 to respond";
+
+    #[test]
+    fn edge_pending_quiet_prompt_targets_the_indicator_not_the_pixel_centroid() {
+        let after = state(1638934, PENDING, vec![site_info(None)]);
+        assert_eq!(
+            quiet_permission_indicator(&before(), &after, 1640, 1642, 2),
+            Ok(Some((140.0, 100.0)))
+        );
+    }
+
+    #[test]
+    fn a_separate_prompt_surface_or_no_pending_request_needs_no_expansion() {
+        let quiet = state(1638934, PENDING, vec![site_info(None)]);
+        // Chrome's run: the bubble is outside the window capture.
+        assert_eq!(
+            quiet_permission_indicator(&before(), &quiet, 22131, 9037, 2),
+            Ok(None)
+        );
+        let settled = state(1638934, "cua-driver Web Harness", vec![site_info(None)]);
+        assert_eq!(
+            quiet_permission_indicator(&before(), &settled, 1640, 1642, 2),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn absent_ambiguous_or_foreign_indicators_are_refused() {
+        let unchanged = state(
+            1638934,
+            PENDING,
+            vec![site_info(Some("View site information"))],
+        );
+        assert!(quiet_permission_indicator(&before(), &unchanged, 1640, 1642, 2).is_err());
+        let ambiguous = state(
+            1638934,
+            PENDING,
+            vec![site_info(None), site_info(Some("Notifications"))],
+        );
+        assert!(quiet_permission_indicator(&before(), &ambiguous, 1640, 1642, 2).is_err());
+        let other_window = state(42, PENDING, vec![site_info(None)]);
+        assert!(quiet_permission_indicator(&before(), &other_window, 1640, 1642, 2).is_err());
+        let no_anchor = state(1638934, "cua-driver Web Harness", vec![]);
+        let quiet = state(1638934, PENDING, vec![site_info(None)]);
+        assert!(quiet_permission_indicator(&no_anchor, &quiet, 1640, 1642, 2).is_err());
+        let mut narrow = quiet.clone();
+        narrow["screenshot_width"] = json!(90);
+        assert!(quiet_permission_indicator(&before(), &narrow, 1640, 1642, 2).is_err());
+    }
 }
 
 fn run_browser_owned_permission_prompt(spec: &BrowserSpec) {
@@ -4168,26 +4298,28 @@ fn run_browser_owned_permission_prompt(spec: &BrowserSpec) {
             changed_pixel_count(&desktop_crop_before, &desktop_crop_after);
         let mut quiet_prompt_expanded = false;
         let mut quiet_prompt_indicator = None;
+        let minimum_desktop_to_window_ratio = 2_u64;
 
         // Edge can collapse the notification request to a quiet indicator in
-        // browser chrome. Expand the region that actually changed, then assess
-        // the resulting browser-owned surface with the same pixel oracle.
-        // macOS locates the indicator in the window capture and gates on its
-        // change count: a system notification banner can cover the toolbar in
-        // the desktop capture.
+        // browser chrome. Expand it, then assess the resulting browser-owned
+        // surface with the same pixel oracle. Windows locates the indicator from
+        // the window's accessibility tree: the indicator plus the address text it
+        // shifts can change more than minimum_prompt_pixels, and their centroid
+        // lands on the address text. macOS locates the indicator in the window
+        // capture and gates on its change count: a system notification banner
+        // can cover the toolbar in the desktop capture.
         let quiet_indicator = if spec.name != "edge" {
             None
-        } else if cfg!(target_os = "windows")
-            && initial_desktop_changed_pixels < minimum_prompt_pixels
-        {
-            let full_desktop_before = load_capture(&desktop_before_path);
-            let full_desktop_after = load_capture(&desktop_after_path);
-            Some(browser_chrome_changed_pixel_center(
-                &full_desktop_before,
-                &full_desktop_after,
-                &desktop,
-                bounds,
-            ))
+        } else if cfg!(target_os = "windows") {
+            quiet_permission_indicator(
+                before.structured(),
+                window.structured(),
+                initial_desktop_changed_pixels,
+                changed_pixel_count(&window_before, &window_after),
+                minimum_desktop_to_window_ratio,
+            )
+            .unwrap_or_else(|reason| panic!("Edge quiet permission indicator: {reason}"))
+            .map(Some)
         } else if cfg!(target_os = "macos")
             && changed_pixel_count(&window_before, &window_after) < minimum_prompt_pixels
         {
@@ -4260,7 +4392,6 @@ fn run_browser_owned_permission_prompt(spec: &BrowserSpec) {
 
         let desktop_changed_pixels = changed_pixel_count(&desktop_crop_before, &desktop_crop_after);
         let window_changed_pixels = changed_pixel_count(&window_before, &window_after);
-        let minimum_desktop_to_window_ratio = 2_u64;
         let desktop_has_materially_more_prompt_pixels = window_changed_pixels
             .saturating_mul(minimum_desktop_to_window_ratio)
             < desktop_changed_pixels;
