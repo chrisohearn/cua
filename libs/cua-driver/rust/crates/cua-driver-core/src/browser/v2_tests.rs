@@ -62,6 +62,8 @@ pub(super) struct FixtureState {
     semantic_html_style: String,
     semantic_full_dom_fails: bool,
     semantic_full_dom_times_out: bool,
+    semantic_dom_unresponsive: bool,
+    semantic_size_then_timeout: bool,
     semantic_truncated_dom: bool,
     screenshot_data: String,
     viewport_css_width: f64,
@@ -109,6 +111,8 @@ impl Default for FixtureState {
             semantic_html_style: String::new(),
             semantic_full_dom_fails: false,
             semantic_full_dom_times_out: false,
+            semantic_dom_unresponsive: false,
+            semantic_size_then_timeout: false,
             semantic_truncated_dom: false,
             screenshot_data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZJrAAAAAASUVORK5CYII=".into(),
             viewport_css_width: 800.0,
@@ -529,7 +533,11 @@ pub(super) fn fixture_handler(state: SharedState) -> MockHandler {
             })),
             "DOM.getDocument" if is_tab => {
                 let depth = call.params["depth"].as_i64().unwrap_or(-1);
-                if st.semantic_full_dom_times_out && (depth == -1 || depth > 8) {
+                if st.semantic_dom_unresponsive || (st.semantic_size_then_timeout && depth != -1) {
+                    MockReply::err(-32000, "CDP DOM.getDocument timed out after 20s")
+                } else if st.semantic_size_then_timeout {
+                    MockReply::err(-32000, "Object reference chain is too long")
+                } else if st.semantic_full_dom_times_out && (depth == -1 || depth > 8) {
                     MockReply::err(-32000, "CDP DOM.getDocument timed out after 20s")
                 } else if st.semantic_full_dom_fails && (depth == -1 || depth > 8) {
                     MockReply::err(-32000, "Object reference chain is too long")
@@ -2667,16 +2675,80 @@ async fn semantic_snapshot_uses_bounded_dom_fallback_only_for_known_size_failure
     let snap = semantic_snapshot_with(&f, &target, &tab, json!({"query": "Reply"})).await;
     assert_eq!(snap["status"], "ok", "{snap}");
     assert_eq!(snap["snapshot"]["complete"], false, "{snap}");
-    let document_calls = recorded_calls(&f, "DOM.getDocument");
-    assert!(document_calls
-        .iter()
-        .any(|(_, params)| params["depth"] == -1));
-    assert!(document_calls
-        .iter()
-        .any(|(_, params)| params["depth"] == 256));
-    assert!(document_calls
-        .iter()
-        .any(|(_, params)| params["depth"] == 8));
+    assert_at_most_two_document_requests(&f);
+    assert_eq!(
+        document_depths(&f).len(),
+        2,
+        "a size failure takes one bounded fallback"
+    );
+}
+
+/// Outbound DOM.getDocument depths per CDP session, in request order. An
+/// out-of-process iframe is read on its own session after the tab's document.
+fn document_depths_by_session(f: &Fixture) -> Vec<(Option<String>, Vec<i64>)> {
+    let mut sessions: Vec<(Option<String>, Vec<i64>)> = Vec::new();
+    for (session, params) in recorded_calls(f, "DOM.getDocument") {
+        let depth = params["depth"].as_i64().unwrap_or(-1);
+        match sessions.iter_mut().find(|(known, _)| *known == session) {
+            Some((_, depths)) => depths.push(depth),
+            None => sessions.push((session, vec![depth])),
+        }
+    }
+    sessions
+}
+
+/// The tab's own document requests: the first session to call DOM.getDocument.
+fn document_depths(f: &Fixture) -> Vec<i64> {
+    document_depths_by_session(f)
+        .into_iter()
+        .next()
+        .map(|(_, depths)| depths)
+        .unwrap_or_default()
+}
+
+/// Each document read makes the full-depth request first and at most one more.
+fn assert_at_most_two_document_requests(f: &Fixture) {
+    let sessions = document_depths_by_session(f);
+    assert!(!sessions.is_empty());
+    for (session, depths) in sessions {
+        assert_eq!(depths.first(), Some(&-1), "{session:?}: {depths:?}");
+        assert!(
+            depths.len() <= 2,
+            "{session:?} issued {} DOM.getDocument requests: {depths:?}",
+            depths.len()
+        );
+    }
+}
+
+#[tokio::test]
+async fn semantic_snapshot_stops_after_one_fallback_when_the_page_never_answers() {
+    let f = fixture_with(|st| st.semantic_dom_unresponsive = true).await;
+    let (target, tab) = bind(&f).await;
+    let snap = semantic_snapshot_with(&f, &target, &tab, json!({"query": "Reply"})).await;
+    assert_eq!(snap["status"], "refused", "{snap}");
+    assert!(
+        snap["refusal"]["message"]
+            .as_str()
+            .is_some_and(
+                |message| message.contains("fallback failed") && message.contains("timed out")
+            ),
+        "{snap}"
+    );
+    assert_at_most_two_document_requests(&f);
+    assert_eq!(
+        document_depths(&f).len(),
+        2,
+        "the one fallback must still be attempted"
+    );
+}
+
+#[tokio::test]
+async fn semantic_snapshot_stops_when_the_fallback_after_a_size_error_times_out() {
+    let f = fixture_with(|st| st.semantic_size_then_timeout = true).await;
+    let (target, tab) = bind(&f).await;
+    let snap = semantic_snapshot_with(&f, &target, &tab, json!({"query": "Reply"})).await;
+    assert_eq!(snap["status"], "refused", "{snap}");
+    assert_at_most_two_document_requests(&f);
 }
 
 #[tokio::test]
@@ -2690,16 +2762,12 @@ async fn semantic_snapshot_uses_bounded_dom_fallback_for_full_tree_timeout() {
     let snap = semantic_snapshot_with(&f, &target, &tab, json!({"query": "Reply"})).await;
     assert_eq!(snap["status"], "ok", "{snap}");
     assert_eq!(snap["snapshot"]["complete"], false, "{snap}");
-    let document_calls = recorded_calls(&f, "DOM.getDocument");
-    assert!(document_calls
-        .iter()
-        .any(|(_, params)| params["depth"] == -1));
-    assert!(document_calls
-        .iter()
-        .any(|(_, params)| params["depth"] == 8));
-    assert!(document_calls.iter().all(|(_, params)| {
-        params["depth"] == -1 || params["depth"].as_i64().is_some_and(|depth| depth <= 8)
-    }));
+    assert_at_most_two_document_requests(&f);
+    assert_eq!(
+        document_depths(&f).len(),
+        2,
+        "a timeout takes one bounded fallback"
+    );
 }
 
 #[tokio::test]
