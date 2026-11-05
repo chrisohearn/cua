@@ -38,7 +38,8 @@ env:
 jobs:
   lane:
     name: doctor on ${{ matrix.provider }}
-    runs-on: ubuntu-latest
+    # Overlays link against this runner's glibc: build no newer than the 24.04 target.
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
       fail-fast: false

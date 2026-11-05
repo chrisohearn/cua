@@ -3,6 +3,10 @@ description: >-
   Build the cua CLI, cua-spacesd and cua-driver from this checkout on a Linux
   runner, for the cua-sandbox action (cua-bin and overlay). Each binary embeds
   the checkout's git sha, which `cua doctor --expect ...=git:<sha>` checks.
+  The binaries link against the runner's glibc, so run the calling job on a
+  runner no newer than the sandbox image it overlays (ubuntu-24.04 for
+  ghcr.io/trycua/linux:24.04); a newer runner fails in the guest with
+  `GLIBC_x.y not found`.
 
 inputs:
   components:
