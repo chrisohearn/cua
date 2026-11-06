@@ -70,6 +70,44 @@ def test_flaky_only_passes_with_report(env):
     assert (env / "flaky-results" / "t.json").exists()
 
 
+@pytest.fixture
+def cp1252_event(env, monkeypatch):
+    """A UTF-8 pull-request event, read as Windows runners read text by default (cp1252)."""
+    event = env / "event.json"
+    # U+201D is E2 80 9D in UTF-8, and cp1252 has no character for 0x9D.
+    body = {"pull_request": {"number": 22, "title": "Approved “as is”", "head": {"sha": "f" * 40}}}
+    event.write_bytes(json.dumps(body, ensure_ascii=False).encode("utf-8"))
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    monkeypatch.setenv("GITHUB_SHA", "0" * 40)
+    read_text = Path.read_text
+
+    def windows_default(self, encoding=None, errors=None, **kw):
+        if encoding is None and self == event:
+            encoding = "cp1252"
+        return read_text(self, encoding, errors, **kw)
+
+    monkeypatch.setattr(Path, "read_text", windows_default)
+    return event
+
+
+def test_report_binds_a_utf8_pull_request_event_under_a_windows_default_encoding(env, cp1252_event):
+    assert run(env, exit_code=0, junit=JUNIT.replace('<failure message="boom"/><rerunFailure message="boom"/>', "")) == 0
+    report = json.loads((env / "flaky-results" / "t.json").read_text())
+    assert (report["pr"], report["sha"]) == (22, "f" * 40)
+    assert run(env) == 1
+    report = json.loads((env / "flaky-results" / "t.json").read_text())
+    assert (report["pr"], report["sha"], [row["id"] for row in report["flaky"]]) == (22, "f" * 40, ["pkg::bin::racy"])
+
+
+def test_malformed_event_is_not_hidden(env, cp1252_event):
+    cp1252_event.write_bytes(b'{"pull_request": ')
+    with pytest.raises(ValueError):
+        flaky.run_metadata()
+    cp1252_event.write_bytes(b'{"pull_request": {"title": "\xff"}}')
+    with pytest.raises(UnicodeDecodeError):
+        flaky.run_metadata()
+
+
 def test_quarantined_failure_does_not_block(env):
     flaky.QUARANTINE_FILE.write_text(json.dumps({"entries": [entry()]}))
     assert run(env) == 0
