@@ -16,10 +16,11 @@
 
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 
 import type { Locator, Page } from "@playwright/test";
 
-import { expect, test } from "./host";
+import { ELECTRON, expect, test } from "./host";
 
 import type { ParityCheckpoint, ParityReplay } from "../src/bridge/parity";
 import { panelFacts, railWindows } from "../src/components/space-thread/rail";
@@ -229,6 +230,8 @@ const readFacts = (root: Page | Locator) =>
 async function checkSpaceDetail(page: Page, cp: Of<"space-detail">): Promise<void> {
   await page.evaluate(([s, u, h]) => window.__cuaParity!.showSpaceDetail(s, u, h), [cp.space, cp.usage, cp.hostArch] as const);
   await navigate(page, `/spaces/${encodeURIComponent(cp.space.id)}`);
+  // The first detail navigation loads a split route before its content can be checked.
+  await page.locator("[data-detail-title]").waitFor();
   const want = cp.detail.facts.map((f) => ({
     label: f.label,
     value: f.value,
@@ -520,4 +523,21 @@ test("the page's core and e2e/flows.ts name every flow on disk", async ({ page }
   const inCore = await page.evaluate(() => window.__cuaParity!.flows());
   expect([...inCore].sort()).toEqual(ON_DISK);
   expect(Object.keys(FLOW_PLAN).sort()).toEqual(ON_DISK);
+});
+
+test("create-cancel checks a cold Space detail route", async ({ page }) => {
+  test.skip(ELECTRON, "Cold Vite transforms only occur in the browser dev-server lane");
+  let delayed = false;
+  await page.route(/\/src\/routes\/spaces\/\$spaceId\.tsx\?tsr-split=component$/, async (route) => {
+    delayed = true;
+    // Keep the first route load pending beyond the content assertion's 5 s budget.
+    await delay(6_000);
+    await route.continue();
+  });
+  await open(page, "spaces");
+  const replay: ParityReplay = await page.evaluate(() => window.__cuaParity!.replay("create-cancel"));
+  const cp = replay.checkpoints.find((cp): cp is Of<"space-detail"> => cp.kind === "space-detail");
+  expect(cp, "create-cancel reaches a Space detail checkpoint").toBeDefined();
+  await checkSpaceDetail(page, cp!);
+  expect(delayed, "the cold detail route was held").toBe(true);
 });
