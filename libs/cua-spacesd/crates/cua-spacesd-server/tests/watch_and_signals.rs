@@ -156,7 +156,9 @@ async fn attribute_changes_are_chmod_and_writes_are_write() {
     let mut stream = watch(&c, &dir, false).await;
 
     // `touch` of a new file: create plus an attribute change, never a write.
-    run_sh(&c, &format!("touch '{dir}/new.txt'")).await;
+    // An explicit time (POSIX `-t`): creating at the current time sets no
+    // times in uutils (Ubuntu 26.04) or BSD touch, only in GNU touch.
+    run_sh(&c, &format!("touch -t 202001010000 '{dir}/new.txt'")).await;
     let seen = settled(&c, &mut stream, &dir).await;
     assert!(
         seen.contains(&k("new.txt", FsEventType::Create)),
