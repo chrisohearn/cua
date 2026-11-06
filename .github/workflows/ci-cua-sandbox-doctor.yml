@@ -60,13 +60,16 @@ env:
   # Cua programs and packages run here never send usage telemetry.
   CUA_TELEMETRY: "0"
   DO_NOT_TRACK: "1"
-  IMAGE: ghcr.io/trycua/linux:24.04
+  # The catalog digest (libs/images/sandbox-images.json): the floating tag follows
+  # upstream main, whose image claims may need daemon features this source lacks.
+  IMAGE: ghcr.io/trycua/linux:24.04@sha256:9ac0d6f6f7dd95392554ec95163f83c5061de3db05b64977696c78d71cd4861c
 
 jobs:
   doctor:
     if: ${{ !startsWith(github.head_ref, 'release-please--branches--') }}
     name: Image doctor (overlaid cua-spacesd and cua-driver)
-    runs-on: ubuntu-latest
+    # Overlays link against this runner's glibc: build no newer than the 24.04 target.
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
