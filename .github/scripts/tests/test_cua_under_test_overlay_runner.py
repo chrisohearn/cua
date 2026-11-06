@@ -1,6 +1,7 @@
 """Overlays built from this checkout must run in the sandbox image they are injected into."""
 
 from pathlib import Path
+import json
 import re
 
 import yaml
@@ -27,9 +28,17 @@ def overlay_jobs():
                 if step.get("uses") != "./.github/actions/cua-sandbox" or not inputs.get("overlay"):
                     continue
                 image = re.sub(r"\$\{\{\s*env\.(\w+)\s*\}\}", lambda m: str(env.get(m.group(1), "")), str(inputs.get("image", "")))
-                if builds and image == TARGET_IMAGE:
+                if builds and re.fullmatch(re.escape(TARGET_IMAGE) + r"(@sha256:[0-9a-f]{64})?", image):
                     found.append((path.name, name, job.get("runs-on")))
     return found
+
+
+def test_doctor_targets_the_catalog_digest_of_the_image():
+    # The tag follows upstream main, whose image may claim features this source lacks.
+    catalog = json.loads((REPO_ROOT / "libs/images/sandbox-images.json").read_text())
+    entry = next(image for image in catalog["images"] if image["ref"] == TARGET_IMAGE)
+    workflow = yaml.safe_load((WORKFLOWS / "ci-cua-sandbox-doctor.yml").read_text())
+    assert workflow["env"]["IMAGE"] == f"{TARGET_IMAGE}@{entry['digest']}"
 
 
 def test_every_target_overlay_is_built_on_a_compatible_runner():

@@ -46,7 +46,7 @@ class VerifySkillTests(unittest.TestCase):
         job = workflow.split("\n  verify-skill:\n")[1].split("\n  shared:\n")[0]
         for setting in (
             "if: inputs.lane == '' || inputs.lane == 'verify'",
-            "timeout-minutes: 25",
+            "timeout-minutes: 90",
             'CUA_E2E_RETRY_ONCE: "0"',
             "key: e2e-shared",
             "CUA_E2E_SOURCE_SHA: ${{ needs.source.outputs.sha }}",
@@ -59,6 +59,21 @@ class VerifySkillTests(unittest.TestCase):
         ):
             self.assertIn(setting, job)
         self.assertNotIn("name: rust-linux-", job)
+        # The install goes through the cached apt action (its bounded retries and
+        # package cache survive a slow mirror), with exactly the proof's packages.
+        self.assertNotIn("apt-get", job)
+        install = job.split("      - name: Install GUI and Rust build dependencies\n")[1].split("      - name:")[0]
+        self.assertIn("uses: ./.github/actions/apt-install", install)
+        self.assertEqual(
+            set(install.split("packages: >-\n")[1].split()),
+            {
+                "xvfb", "dbus-x11", "at-spi2-core", "openbox", "picom", "python3-gi", "gir1.2-gtk-3.0",
+                "libgtk-3-dev", "clang", "pkg-config", "libdbus-1-dev", "libpipewire-0.3-dev",
+                "libspa-0.2-dev", "libei-dev", "libx11-dev", "libxi-dev", "libxtst-dev", "libxext-dev",
+                "libwebkit2gtk-4.1-dev", "libssl-dev", "libxdo-dev",
+                "libayatana-appindicator3-dev", "librsvg2-dev", "ffmpeg", "jq", "x11-utils",
+            },
+        )
         for name in ("summary", "certify"):
             section = workflow.split(f"\n  {name}:\n")[1].split("    steps:")[0]
             self.assertIn("needs: [source, shared, native, capture, installer]", section)
