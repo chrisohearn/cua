@@ -26,7 +26,7 @@ All paths are on the Omarchy workstation, user `cohearn`, `HOME=/home/cohearn`.
 
 | What | Where | Notes |
 | --- | --- | --- |
-| Installed driver | `~/.cua-driver/packages/current` → `releases/0.38.0-main-260833c-x86_64-unknown-linux-gnu` | Built from fork commit `260833cfc`. Previous build kept: `releases/0.38.0-main-d834330-x86_64-unknown-linux-gnu`. |
+| Installed driver | `~/.cua-driver/packages/current` → `releases/0.38.0-main-86e6db7-x86_64-unknown-linux-gnu` | Built from fork commit `86e6db71c`. Previous build kept for rollback: `releases/0.38.0-main-260833c-x86_64-unknown-linux-gnu`. |
 | `cua-driver` on `PATH` | `~/.local/bin/cua-driver` → `~/.cua-driver/packages/current/cua-driver` | Every consumer below resolves the binary through this symlink. |
 | Host daemon | `cua-driver.service` (`~/.config/systemd/user/cua-driver.service`) | `cua-driver serve --permission-mode unrestricted --dangerously-bypass-approvals`, `CUA_DRIVER_RS_ENABLE_WAYLAND=1`. Socket `~/.cache/cua-driver/cua-driver.sock`. Drives Chris's own screen; use it only when he asks. |
 | Agent desktop daemon | `agent-desktop-cua.service`, part of `agent-desktop.target` | `agent-desktop run cua` starts `cua-driver serve --socket $XDG_RUNTIME_DIR/agent-desktop/cua.sock … --no-overlay` on invisible display `:42`. Agents do all browser work here. |
@@ -53,11 +53,13 @@ gh pr list -R trycua/cua --author chrisohearn --state open  # our upstream PRs
 Only docs: `FORK.md` and the `<!-- fork:start -->`…`<!-- fork:end -->` block at the end of `AGENTS.md`.
 No product, config or CI file differs from upstream.
 
-### In the installed host build (`host/cua-driver-deep-replies`, commit `260833cfc`)
+### In the installed host build (`host/cua-semantic-throughput-9350d041`, commit `86e6db71c`)
 
-The host branch is `feat/cua-headless-isolated-5156e71a` (commit `d834330d0`, which
-merges upstream `d1fe368a6` with two stacked upstream PRs) plus a cherry-pick of a
-third upstream PR. Build only from the remote host branch.
+The host branch combines fork main `9ab99152f`, the previous installed
+`host/cua-driver-deep-replies` build (`260833cfc`), and the two contributor-authored
+commits from upstream PR #5387. The previous build contains
+`feat/cua-headless-isolated-5156e71a` (`d834330d0`) plus the deep-CDP-reply fix.
+Build only from the remote host branch.
 `feat/cua-headless-isolated-5156e71a` is the head branch of PR #4934, so never push
 host-only fixes to it; they would join that PR. Cherry-pick them onto the host branch instead.
 Local `up/*` branches in shared clones are other sessions' scratch work.
@@ -112,6 +114,20 @@ with `isolated_named`, `existing_profile`, `pid`, `window_id`, or without `allow
 such as ChatGPT. Why: serde_json's default 128-level limit rejected full-depth
 `DOM.getDocument` replies, and the CDP reader dropped them until the call timed out.
 
+**4. Target-scoped accessibility identities and cycle guards ([trycua/cua#5387](https://github.com/trycua/cua/pull/5387), author Iflaqbhat).**
+Reuses contributor commits `2df642763` and `17b9a45ac`. Accessibility node ids are
+scoped to their CDP target, same-process iframe ancestry is retained, and outline
+parent walks terminate on cycles. The old host daemon was stuck in those walks,
+consuming approximately six logical CPU cores. The installed build preserves the
+three existing host features above.
+
+Local verification: 16 semantic tests and the full browser suite (256 passed, one
+ignored), release build with `portal-input`, configured source review, and six
+isolated headless browsers completing 120 iframe snapshots. Both live daemon
+sockets were verified after the pointer switch; shared Chrome was not restarted.
+This is host-install evidence, not full cross-platform certification. Broader
+qualification includes [a Wayland native evidence-capture timeout](https://github.com/chrisohearn/cua/actions/runs/42133054473); do not treat that run as passing.
+
 ### Open upstream PRs not in the host build
 
 These fork branch names start with `upstream/`, so they look like refs on the
@@ -157,9 +173,9 @@ separate worktree, never in the main checkout:
 export PATH="$HOME/.cargo/bin:$PATH"
 git fetch origin
 # First time:
-git worktree add --detach ~/.cache/cua-host-build origin/host/cua-driver-deep-replies
+git worktree add --detach ~/.cache/cua-host-build origin/host/cua-semantic-throughput-9350d041
 # Later rebuilds, when the worktree already exists:
-git -C ~/.cache/cua-host-build checkout --detach origin/host/cua-driver-deep-replies
+git -C ~/.cache/cua-host-build checkout --detach origin/host/cua-semantic-throughput-9350d041
 cd ~/.cache/cua-host-build/libs/cua-driver/rust
 cargo build --locked -p cua-driver -p cursor-theme-cli --release --features cua-driver/portal-input
 target/release/cua-driver --version        # cua-driver 0.38.0
@@ -264,14 +280,14 @@ gh api --paginate 'repos/chrisohearn/cua/actions/workflows?per_page=100' \
 gh workflow disable <workflow-file-name.yml> -R chrisohearn/cua    # for each path printed
 ```
 
-To refresh the host build after a sync, merge `upstream/main` into
-`feat/cua-headless-isolated-5156e71a`. It already contains #4931's commits.
-Expect conflicts in the browser consent and existing-profile code under
-`libs/cua-driver/rust/crates/platform-linux/src/`. Keep upstream's behavior and
-re-apply ours on top. Push it, then reset `host/cua-driver-deep-replies` to it and
-cherry-pick #6338's commit again unless it has merged upstream. Then run the focused
-tests, push, rebuild and install as above.
-When #4931, #4934 and #6338 ship upstream, go back to the stock installer and delete their branches.
+To refresh the host build after a sync, fetch upstream and origin, then start a
+new worktree from `origin/host/cua-semantic-throughput-9350d041` and merge
+`upstream/main` there. Preserve the existing-profile, headless, deep-reply and
+semantic-identity changes until their replacements are present upstream. Do not
+reset or add host integration commits to the branches backing upstream PRs.
+Run the focused tests, push the host branch, rebuild and install as above.
+When #4931, #4934, #6338 and #5387 ship in a component release, verify the stock
+installer contains their behavior before retiring the custom slot.
 
 ## Working rules for this fork
 
