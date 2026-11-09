@@ -429,7 +429,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                 let v = version.min(7);
                 state
                     .seats
-                    .add(registry.bind::<WlSeat, _, _>(name, v, qh, ()));
+                    .add(registry.bind::<WlSeat, _, _>(name, v, qh, ()), v);
             } else if interface == ZwlrVirtualPointerManagerV1::interface().name {
                 state.vptr_manager = Some(registry.bind::<ZwlrVirtualPointerManagerV1, _, _>(
                     name,
