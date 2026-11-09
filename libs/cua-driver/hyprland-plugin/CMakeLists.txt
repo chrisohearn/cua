@@ -84,6 +84,10 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/agent_key_repeat_test.py)
     set_tests_properties(cua_hyprland_agent_key_repeat_test PROPERTIES
         ENVIRONMENT "CXX=${CMAKE_CXX_COMPILER}")
+    add_test(NAME cua_hyprland_seat_session_policy_test
+        COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/seat_session_policy_test.py)
+    set_tests_properties(cua_hyprland_seat_session_policy_test PROPERTIES
+        ENVIRONMENT "CXX=${CMAKE_CXX_COMPILER}")
 
     add_executable(cua_hyprland_passive_pointer_target_test tests/passive_pointer_target_test.cpp)
     target_compile_features(cua_hyprland_passive_pointer_target_test PRIVATE cxx_std_26)
@@ -161,7 +165,7 @@ if(UNIX)
     set_target_properties(cua_hyprland_transport PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
     if(BUILD_TESTING)
-        foreach(lifetime_test IN ITEMS owned_socket_path seat_lifetime)
+        foreach(lifetime_test IN ITEMS owned_socket_path seat_lifetime agent_seat_lifetime)
             add_executable(cua_hyprland_${lifetime_test}_test tests/${lifetime_test}_test.cpp)
             target_compile_features(cua_hyprland_${lifetime_test}_test PRIVATE cxx_std_26)
             target_include_directories(cua_hyprland_${lifetime_test}_test PRIVATE src)

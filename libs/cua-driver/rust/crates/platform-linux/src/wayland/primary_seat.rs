@@ -1,5 +1,11 @@
 //! Keep synthetic delivery seats out of the existing foreground input path.
 //! Preserve the legacy last-advertised-seat choice among ordinary seats.
+//!
+//! The Hyprland plugin advertises an agent seat only while an isolated-input
+//! session uses it (#4257), so one can appear between enumeration roundtrips
+//! and still be unnamed when a seat is chosen. A named ordinary seat therefore
+//! wins over any unnamed seat; unnamed seats are chosen only when no seat has
+//! announced an ordinary name (pre-v2 `wl_seat`).
 
 pub(super) struct Seats<T> {
     entries: Vec<(T, Option<String>)>,
@@ -25,17 +31,17 @@ impl<T: Clone + PartialEq> Seats<T> {
     }
 
     pub(super) fn selected(&self) -> Option<T> {
-        self.entries
-            .iter()
-            .rev()
-            .find(|entry| {
-                !entry.1.as_deref().is_some_and(|name| {
-                    name == "Cua-Test-Agent"
-                        || name.starts_with("Cua-Test-Agent-")
-                        || name == "Cua-Agent"
-                        || name == "Cua-Agent-2"
-                })
-            })
+        let agent = |name: &str| {
+            name == "Cua-Test-Agent"
+                || name.starts_with("Cua-Test-Agent-")
+                || name == "Cua-Agent"
+                || name == "Cua-Agent-2"
+        };
+        let ordinary = self.entries.iter().rev();
+        ordinary
+            .clone()
+            .find(|entry| entry.1.as_deref().is_some_and(|name| !agent(name)))
+            .or_else(|| ordinary.clone().find(|entry| entry.1.is_none()))
             .map(|entry| entry.0.clone())
     }
 }
@@ -69,6 +75,21 @@ mod tests {
         seats.add(1);
         seats.add(3);
         assert_eq!(seats.selected(), Some(3));
+    }
+
+    #[test]
+    fn session_seat_advertised_late_and_still_unnamed_never_replaces_primary() {
+        // A session-lifetime agent seat can arrive after the user's seat was
+        // named and before its own name event is dispatched.
+        let mut seats = Seats::default();
+        seats.add(1);
+        seats.name(&1, "Hyprland".into());
+        seats.add(2);
+        assert_eq!(seats.selected(), Some(1));
+        seats.name(&2, "Cua-Agent".into());
+        assert_eq!(seats.selected(), Some(1));
+        seats.add(3);
+        assert_eq!(seats.selected(), Some(1));
     }
 
     #[test]

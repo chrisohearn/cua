@@ -23,6 +23,7 @@ cmake/VerifyRuntime.cmake
 include/cua_hyprland/protocol.hpp
 include/cua_hyprland/session.hpp
 include/cua_hyprland/status.hpp
+src/agent_seat_lifetime.hpp
 src/drag_geometry.hpp
 src/foreground_route.hpp
 src/inject_server.cpp
@@ -42,6 +43,7 @@ src/seat_lifetime.hpp
 src/session.cpp
 src/status.cpp
 tests/agent_key_repeat_test.py
+tests/agent_seat_lifetime_test.cpp
 tests/cmake-api/CMakeLists.txt
 tests/cmake-api/include/src/plugins/PluginAPI.hpp
 tests/desktop_fault_policy_fixture.cpp
@@ -62,6 +64,7 @@ tests/plugin_api_test.cpp
 tests/plugin_input_lifetime_test.cpp
 tests/protocol_test.cpp
 tests/seat_lifetime_test.cpp
+tests/seat_session_policy_test.py
 tests/status_test.cpp
 tests/transport_test.cpp
 """.split()

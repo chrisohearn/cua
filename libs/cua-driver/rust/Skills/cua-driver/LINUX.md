@@ -325,9 +325,14 @@ held-key streams, and modified pointer gestures remain outside this scope.
 Chromium, Electron, and XWayland raw background input are outside this scope.
 AT-SPI routes retain their separate behavior.
 
-Two compositor seats, `Cua-Agent` and `Cua-Agent-2`, persist across configuration
-disable/re-enable. Each connection claims one lane, and each admitted action
-requires a fresh target binding. Plugin replacement requires a desktop restart;
+Two compositor seats, `Cua-Agent` and `Cua-Agent-2`, are advertised only while
+an admitted background session uses their lane, and are withdrawn when it ends
+or idles for 20 seconds. The first background action on a new seat waits up to
+1.5 seconds for the target to bind it, then refuses with `client_not_bound`
+(detail `agent_seat_not_bound`); it never falls back to the user's seat. While
+a session runs, an app that supports only one seat may follow the agent seat and
+ignore user input until the session ends. Each connection claims one lane, and
+each admitted action requires a fresh target binding. Plugin replacement requires a desktop restart;
 do not treat historical experiment reload workarounds as a supported lifecycle.
 Refusals never authorize a hidden foreground fallback, display wake, or session
 unlock. A dispatch acknowledgement is `effect:"unverifiable"`; verify the

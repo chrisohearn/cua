@@ -39,7 +39,44 @@ Connection failures and unknown delivery results do not permit retries.
 The v3 seats are `Cua-Agent` and `Cua-Agent-2`. Driver excludes these from its
 foreground virtual-input routes. Seat ownership does not come from public
 session labels. The signed experiment uses separate sockets, protocol 0, and
-its original seat names.
+its original seat names, and keeps its historical compositor-lifetime seats.
+
+### Agent seat lifetime
+
+A lane advertises its `wl_seat` global only while an admitted isolated-input
+session uses it ([#4257](https://github.com/trycua/cua/issues/4257)). When no
+agent is working, clients see only the user's seat, so an app that keeps the
+last `wl_seat` it sees (GPUI apps such as Zed, imv) stays on the user's input.
+
+- The first background `TARGET` that passes admission on a claimed lane
+  publishes the lane's seat as a new global. `CLAIM` alone and
+  `FOREGROUND_TARGET` publish nothing; the foreground route uses the primary
+  seat.
+- The plugin withdraws the seat when the session ends (EOF, the 60-second
+  connection idle timeout, `STOP`, config disable, or a desktop transition)
+  or when the claimed lane has had no admission or action for 20 seconds.
+  Withdrawal releases agent focus, sends `wl_seat.capabilities(0)` to that
+  generation's seat resources, and removes the global from the registry. The
+  global itself is destroyed five seconds later, so a client that binds it
+  before processing `global_remove` gets an inert seat instead of a protocol
+  error.
+- Each publication is a new generation. Resources bound through an older
+  generation stay valid and inert; they never receive input. The next session
+  publishes a fresh global.
+- The first background action after a publication waits up to 1.5 seconds for
+  the target client to bind the new seat's pointer (or keyboard, for `KEY`).
+  The plugin holds that action's reply while it waits; the wire format is
+  unchanged. If the target never binds, the action refuses with
+  `{"ok":false,"code":"client_not_bound","detail":"agent_seat_not_bound"}`.
+  It never falls back to the user's seat. Every target, lease, and conflict
+  check repeats when the wait ends, and a fault during the wait answers the
+  held action with that fault's refusal.
+- The plugin installs no display-wide global filter. libwayland keeps one
+  filter per display and cannot restore Hyprland's on unload.
+
+While a session runs, a single-seat app may follow the agent seat and ignore
+user input until the session ends and the app returns to the user's seat.
+Whether a given app returns after `global_remove` depends on that app.
 
 ## Requests and responses
 
@@ -161,7 +198,10 @@ Refusals use `{"ok":false,"code":"<code>","detail":"<code>"}`. Codes
 include `lane_busy`, `lane_not_claimed`, `stale_target`, `stale_geometry`,
 `session_unavailable`, `unsupported_layout`, `primary_target_busy`,
 `agent_target_busy`, `lease_expired`, `action_not_admitted`, `lease_busy`,
-`client_not_bound`, `replay`, `unsupported`, and `invalid_request`.
+`client_not_bound`, `agent_seat_unavailable`, `replay`, `unsupported`, and
+`invalid_request`. `client_not_bound` with detail `agent_seat_not_bound` means
+the target did not bind a newly published agent seat within the bounded wait.
+`agent_seat_unavailable` means the compositor could not create the seat global.
 
 ## Exact-target foreground extension
 
@@ -240,12 +280,14 @@ active-keyboard keymap notifications. For background bindings, changing primary
 focus to a target client cancels that lane synchronously. Dispatch and timer checks supplement
 these listeners. None of these paths wake the display or unlock the session.
 
-Config disable closes input transports but preserves client-owned seats and
-resources. Re-enable opens fresh transports with new epochs. Each later
+Config disable closes input transports and ends their sessions, which
+withdraws any published agent seat; client-owned resources stay valid and
+inert. Re-enable opens fresh transports with new epochs. Each later
 action must pass fresh Driver admission and target checks. Plugin replacement
 requires a desktop restart. The shared seat-lifetime marker rejects loading
-replacement modules in the same compositor instance. Unload retires globals
-and retains inert callbacks for late client cleanup.
+replacement modules in the same compositor instance. Unload withdraws any
+published seat, retains inert callbacks for late client cleanup, and leaves no
+global filter behind, so clients that connect afterwards are unaffected.
 
 Cancellation releases synthetic state; it does not undo application effects.
 Cleanup depends on a responsive compositor event loop. A stall is not evidence

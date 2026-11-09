@@ -65,6 +65,10 @@ a narrow qualification:
 - Not covered: Chromium, Electron, and XWayland raw input; Unicode and IME;
   multiple layouts; modified pointer gestures.
 - Explicit foreground actions change focus and pointer and do not restore them.
+- Each agent seat exists only while an agent session uses it. While a session
+  runs, an app that supports only one seat (for example Zed or other GPUI apps)
+  may follow the agent seat and ignore your keyboard and mouse until the session
+  ends.
 
 Evidence for this feature is recorded in PRs
 [#3547](https://github.com/trycua/cua/pull/3547),

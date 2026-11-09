@@ -1,6 +1,7 @@
 // Independent-seat design adapted from Dillon DuPont's Hyprland prototype.
 // TARGET uses independent resources; FOREGROUND_TARGET explicitly uses the primary seat.
 #include "input_experiment.hpp"
+#include "agent_seat_lifetime.hpp"
 #include "drag_geometry.hpp"
 #include "input_grant.hpp"
 #include "input_client_deadline.hpp"
@@ -70,6 +71,10 @@ constexpr bool kProduction = true;
 #else
 constexpr bool kProduction = false;
 #endif
+// Production lanes advertise their wl_seat only during an admitted
+// isolated-input session (#4257). The nonshipping signed experiment keeps its
+// historical compositor-lifetime seats and retirement evidence.
+constexpr bool kSessionSeats = kProduction;
 
 #ifdef CUA_HYPRLAND_TEST_INPUT
 std::uint64_t unix_ms() {
@@ -145,6 +150,10 @@ std::string refusal(std::string_view code) {
     // Only internal fixed identifiers enter JSON. No caller-provided strings.
     return std::format(R"({{"ok":false,"code":"{}","detail":"{}"}})", code, code);
 }
+std::string refusal(std::string_view code, std::string_view detail) {
+    // Fixed internal identifiers only, as above.
+    return std::format(R"({{"ok":false,"code":"{}","detail":"{}"}})", code, detail);
+}
 std::string refusal(std::string_view code, ForegroundFailure failure) {
     return std::format(R"({{"ok":false,"code":"{}","detail":"{}"}})", code, failure.detail());
 }
@@ -153,10 +162,14 @@ constexpr auto kForegroundDelivered = R"({"ok":true,"effect":"unverifiable","rou
 } // namespace
 
 struct InputExperiment::Impl {
-    struct Seat { SP<CWlSeat> wl; bool dead = false; };
-    struct Pointer { SP<CWlPointer> wl; bool dead = false; WP<CWLSurfaceResource> focus; };
-    struct Keyboard { SP<CWlKeyboard> wl; bool dead = false; WP<CWLSurfaceResource> focus; };
-    struct Touch { SP<CWlTouch> wl; bool dead = false; };
+    // `generation` names the seat global a resource was bound through. Only
+    // the currently published generation receives input; older ones are inert.
+    struct Seat { SP<CWlSeat> wl; bool dead = false; std::uint64_t generation = 0; };
+    struct Pointer { SP<CWlPointer> wl; bool dead = false; WP<CWLSurfaceResource> focus; std::uint64_t generation = 0; };
+    struct Keyboard { SP<CWlKeyboard> wl; bool dead = false; WP<CWLSurfaceResource> focus; std::uint64_t generation = 0; };
+    struct Touch { SP<CWlTouch> wl; bool dead = false; std::uint64_t generation = 0; };
+    // Bind data for one published wl_seat global. It outlives the global.
+    struct SeatGlobal { Impl* owner = nullptr; std::uint64_t generation = 0; wl_global* global = nullptr; };
     struct Client {
         Impl* owner = nullptr;
         int fd = -1;
@@ -186,10 +199,18 @@ struct InputExperiment::Impl {
         unsigned duration;
         DragGeometry geometry;
     };
+    // The first isolated action on a newly published seat, waiting a bounded
+    // time for its target client to bind the seat. No reply has been sent yet.
+    struct PendingAction {
+        Client* client;
+        std::vector<std::string> fields;
+        std::uint64_t capability;
+    };
     int listener = -1;
     wl_event_source* listen_source = nullptr;
     wl_event_source* timer = nullptr;
-    wl_global* global = nullptr;
+    AgentSeatLifetime<SeatGlobal*> seat_lifetime;
+    std::optional<PendingAction> pending;
     OwnedSocketPath socket_path;
     std::string_view socket_cleanup = "not_bound";
     std::string path, epoch = nonce(), keymap_text, physical_keymap_text;
@@ -379,9 +400,42 @@ struct InputExperiment::Impl {
         sync_keymap();
         timer = wl_event_loop_add_timer(g_pCompositor->m_wlEventLoop, tick, this);
         if (!timer) throw std::runtime_error("input timer registration failed");
-        global = wl_global_create(g_pCompositor->m_wlDisplay, &wl_seat_interface, 9, this, bind_seat);
-        if (!global) throw std::runtime_error("synthetic seat unavailable");
+        // Session seats appear only when an admitted session needs them.
+        if (!kSessionSeats && !publish_seat()) throw std::runtime_error("synthetic seat unavailable");
         wl_event_source_timer_update(timer, 16);
+    }
+    // Advertises this lane's wl_seat for a new generation. Clients see a
+    // registry global event and may bind it.
+    bool publish_seat() {
+        if (seat_lifetime.published()) return true;
+        if (retired) return false;
+        auto record = std::make_unique<SeatGlobal>(SeatGlobal{this, seat_lifetime.next_generation(), nullptr});
+        record->global = wl_global_create(g_pCompositor->m_wlDisplay, &wl_seat_interface, 9, record.get(), bind_seat);
+        if (!record->global) return false;
+        seat_lifetime.publish(record.release(), Clock::now());
+        return true;
+    }
+    // Stops advertising the current generation. No display-wide global filter
+    // is involved: wl_global_remove only tells clients the seat is gone.
+    // Existing resources become inert (capabilities 0) and stay valid, so late
+    // release and set_cursor requests never hit a dead object. The global is
+    // destroyed after AgentSeatLifetime::destroy_delay.
+    void withdraw_seat() {
+        if (!seat_lifetime.published()) return;
+        leave_pointer();
+        leave_keyboard();
+        const auto generation = seat_lifetime.generation();
+        for (auto& seat : seats)
+            if (!seat->dead && seat->generation == generation && seat->wl->resource())
+                seat->wl->sendCapabilities(static_cast<wl_seat_capability>(0));
+        wl_global_remove(seat_lifetime.handle()->global);
+        seat_lifetime.withdraw(Clock::now());
+    }
+    void destroy_withdrawn_seats(Clock::time_point now) {
+        for (auto* record : seat_lifetime.expired(now)) {
+            wl_global_destroy(record->global);
+            delete record;
+        }
     }
     void resume() {
         if (retired || desktop_generation == UINT64_MAX)
@@ -427,8 +481,9 @@ struct InputExperiment::Impl {
         if (listener >= 0) close(listener);
         listener = -1;
         cleanup_socket();
-        // Keep the globals, capabilities, and client resources stable. Removing
-        // and recreating them makes existing apps lose their agent input path.
+        // Experiment seats keep their globals, capabilities, and client
+        // resources stable. Production session seats end with the reservation
+        // just released; the next timer tick withdraws them.
     }
     void retire() {
         // wl_global removal does not revoke existing protocol objects. Destroying
@@ -441,11 +496,18 @@ struct InputExperiment::Impl {
         for (auto& seat : seats)
             if (!seat->dead && seat->wl->resource())
                 seat->wl->sendCapabilities(static_cast<wl_seat_capability>(0));
-        if (global) wl_global_remove(global);
+        withdraw_seat();
+        // The retired lane is intentionally leaked with this NODELETE module.
+        // Its timer keeps running and destroys withdrawn globals after the delay.
     }
     ~Impl() {
         revoke("plugin_shutdown");
-        if (global) wl_global_destroy(global);
+        // Reached only when initialization fails, before any client can bind.
+        if (seat_lifetime.published()) {
+            wl_global_remove(seat_lifetime.handle()->global);
+            seat_lifetime.withdraw(Clock::now());
+        }
+        destroy_withdrawn_seats(Clock::time_point::max());
         if (listen_source) wl_event_source_remove(listen_source);
         if (timer) wl_event_source_remove(timer);
         clients.clear();
@@ -466,10 +528,22 @@ struct InputExperiment::Impl {
         return !retired && !suspended && g_pCompositor->m_sessionActive && g_pCompositor->m_dpmsStateOn &&
             !g_pCompositor->m_isShuttingDown && !g_pSessionLockManager->isSessionLocked();
     }
+    // Per-client bound: each publication is a new global, and a client that
+    // never releases withdrawn seats must not exhaust the lane for others.
+    template <class Resource>
+    static std::size_t client_resources(const std::vector<std::unique_ptr<Resource>>& resources, wl_client* client) {
+        return static_cast<std::size_t>(std::ranges::count_if(resources, [&](const auto& r) {
+            return !r->dead && r->wl->client() == client;
+        }));
+    }
+    bool current(std::uint64_t generation) const { return seat_lifetime.current(generation); }
     static void bind_seat(wl_client* client, void* data, std::uint32_t version, std::uint32_t id) {
-        auto& self = *static_cast<Impl*>(data);
-        if (self.seats.size() >= kMaxResources) { wl_client_post_no_memory(client); return; }
+        const auto& record = *static_cast<SeatGlobal*>(data);
+        auto& self = *record.owner;
+        const auto generation = record.generation;
+        if (client_resources(self.seats, client) >= kMaxResources) { wl_client_post_no_memory(client); return; }
         auto seat = std::make_unique<Seat>();
+        seat->generation = generation;
         auto* entry = seat.get();
         seat->wl = makeShared<CWlSeat>(client, std::min(version, 9u), id);
         if (!seat->wl->resource()) { wl_client_post_no_memory(client); return; }
@@ -478,19 +552,21 @@ struct InputExperiment::Impl {
         seat->wl->setData(nullptr);
         seat->wl->setRelease([entry](CWlSeat*) { entry->dead = true; });
         seat->wl->setOnDestroy([entry](CWlSeat*) { entry->dead = true; });
-        seat->wl->setGetPointer([&self](CWlSeat* r, std::uint32_t child) { self.add_pointer(r, child); });
-        seat->wl->setGetKeyboard([&self](CWlSeat* r, std::uint32_t child) { self.add_keyboard(r, child); });
-        seat->wl->setGetTouch([&self](CWlSeat* r, std::uint32_t child) { self.add_touch(r, child); });
+        seat->wl->setGetPointer([&self, generation](CWlSeat* r, std::uint32_t child) { self.add_pointer(r, child, generation); });
+        seat->wl->setGetKeyboard([&self, generation](CWlSeat* r, std::uint32_t child) { self.add_keyboard(r, child, generation); });
+        seat->wl->setGetTouch([&self, generation](CWlSeat* r, std::uint32_t child) { self.add_touch(r, child, generation); });
         if (version >= 2) seat->wl->sendName(kProduction ?
             (self.lane == 0 ? "Cua-Agent" : "Cua-Agent-2") :
             (self.lane == 0 ? "Cua-Test-Agent" : "Cua-Test-Agent-2"));
-        seat->wl->sendCapabilities(static_cast<wl_seat_capability>(self.retired ? 0 :
+        // A bind that raced global_remove gets an inert seat, not an error.
+        seat->wl->sendCapabilities(static_cast<wl_seat_capability>(self.retired || !self.current(generation) ? 0 :
             WL_SEAT_CAPABILITY_POINTER | (self.keyboard_state ? WL_SEAT_CAPABILITY_KEYBOARD : 0)));
         self.seats.push_back(std::move(seat));
     }
-    void add_pointer(CWlSeat* seat, std::uint32_t id) {
-        if (pointers.size() >= kMaxResources) { seat->noMemory(); return; }
+    void add_pointer(CWlSeat* seat, std::uint32_t id, std::uint64_t generation) {
+        if (client_resources(pointers, seat->client()) >= kMaxResources) { seat->noMemory(); return; }
         auto p = std::make_unique<Pointer>(); auto* entry = p.get();
+        p->generation = generation;
         p->wl = makeShared<CWlPointer>(seat->client(), seat->version(), id);
         if (!p->wl->resource()) { seat->noMemory(); return; }
         p->wl->setData(nullptr);
@@ -499,9 +575,10 @@ struct InputExperiment::Impl {
         p->wl->setSetCursor([](CWlPointer*, std::uint32_t, wl_resource*, std::int32_t, std::int32_t) {});
         pointers.push_back(std::move(p));
     }
-    void add_keyboard(CWlSeat* seat, std::uint32_t id) {
-        if (!keyboard_state || keyboards.size() >= kMaxResources) { seat->noMemory(); return; }
+    void add_keyboard(CWlSeat* seat, std::uint32_t id, std::uint64_t generation) {
+        if (!keyboard_state || client_resources(keyboards, seat->client()) >= kMaxResources) { seat->noMemory(); return; }
         auto k = std::make_unique<Keyboard>(); auto* entry = k.get();
+        k->generation = generation;
         k->wl = makeShared<CWlKeyboard>(seat->client(), seat->version(), id);
         if (!k->wl->resource()) { seat->noMemory(); return; }
         k->wl->setData(nullptr);
@@ -511,10 +588,11 @@ struct InputExperiment::Impl {
         if (seat->version() >= 4) k->wl->sendRepeatInfo(repeat_rate, repeat_delay);
         keyboards.push_back(std::move(k));
     }
-    void add_touch(CWlSeat* seat, std::uint32_t id) {
+    void add_touch(CWlSeat* seat, std::uint32_t id, std::uint64_t generation) {
         // Never advertised. A valid inert resource is safer than a dangling id.
-        if (touches.size() >= kMaxResources) { seat->noMemory(); return; }
+        if (client_resources(touches, seat->client()) >= kMaxResources) { seat->noMemory(); return; }
         auto t = std::make_unique<Touch>(); auto* entry = t.get();
+        t->generation = generation;
         t->wl = makeShared<CWlTouch>(seat->client(), seat->version(), id);
         if (!t->wl->resource()) { seat->noMemory(); return; }
         t->wl->setData(nullptr);
@@ -660,6 +738,11 @@ struct InputExperiment::Impl {
     }
     void revoke(std::string_view reason, bool retain_pointer = false, ForegroundFailure failure = {ForegroundFailureReason::none}) {
         if (lease && trace && reason != "completed") trace->mark("agent_cancel", lane + 1);
+        if (pending) {
+            auto* waiting = pending->client;
+            pending.reset();
+            if (!waiting->dead) send(*waiting, refusal(reason));
+        }
         if (drag && drag->client && !drag->client->dead)
             send(*drag->client, failure.reason == ForegroundFailureReason::none ?
                 refusal(foreground_started ? "foreground_partial_unknown" : reason) :
@@ -1026,7 +1109,7 @@ struct InputExperiment::Impl {
         if (hit.first != root) return false;
         unsigned count = 0;
         for (auto& p : pointers) {
-            if (p->dead || !p->wl->resource() || p->wl->client() != root->client()) continue;
+            if (p->dead || !p->wl->resource() || !current(p->generation) || p->wl->client() != root->client()) continue;
             if (p->focus != root) {
                 if (const auto old = p->focus.lock(); old && old->good()) p->wl->sendLeave(serial(), old->getResource().get());
                 p->focus = root;
@@ -1059,7 +1142,7 @@ struct InputExperiment::Impl {
         if (!root || !keyboard_state) return false;
         unsigned count = 0;
         for (auto& k : keyboards) {
-            if (k->dead || !k->wl->resource() || k->wl->client() != root->client()) continue;
+            if (k->dead || !k->wl->resource() || !current(k->generation) || k->wl->client() != root->client()) continue;
             if (k->focus != root) {
                 if (const auto old = k->focus.lock(); old && old->good()) k->wl->sendLeave(serial(), old->getResource().get());
                 k->focus = root;
@@ -1098,6 +1181,10 @@ struct InputExperiment::Impl {
             return;
         }
         if (!c.hello) { send(c, refusal("invalid_request")); return; }
+        // A parked action has not replied yet. Only STOP/CANCEL (which answer
+        // it first) and tracing may interleave on that connection.
+        if (pending && pending->client == &c && command != "STOP" && command != "CANCEL" &&
+            command.rfind("TRACE_", 0) != 0) { send(c, refusal("lease_busy")); return; }
         if (command == "CLAIM" && f.size() == 1) {
             if (reservation && reservation != &c) { send(c, refusal("lane_busy")); return; }
             reservation = &c;
@@ -1107,6 +1194,8 @@ struct InputExperiment::Impl {
             if (kProduction) {
                 if (reservation != &c) { send(c, refusal("lane_not_claimed")); return; }
                 cancel_authority("stopped");
+                // STOP ends the isolated session; the next TARGET republishes.
+                withdraw_seat();
             } else {
                 for (auto* peer : peers) if (peer) peer->cancel_authority("stopped");
             }
@@ -1179,6 +1268,12 @@ struct InputExperiment::Impl {
                     }
                 }
                 if (route == InputRoute::primary_foreground) leave_pointer();
+                // An admitted isolated-input session claims this lane's seat.
+                // Foreground bindings use the primary seat and publish nothing.
+                if (kSessionSeats && route == InputRoute::independent) {
+                    if (!publish_seat()) { invalidate(c); send(c, refusal("agent_seat_unavailable")); return; }
+                    seat_lifetime.touch(Clock::now());
+                }
                 c.foreground_attempted = false;
                 c.token = nonce();
                 grant.arm(requested_cap, Clock::now());
@@ -1200,6 +1295,13 @@ struct InputExperiment::Impl {
         const auto sequence = number(f[1]);
         if (sequence <= c.sequence) { send(c, refusal("replay")); return; }
         c.sequence = sequence;
+        action(c, f, cap);
+    }
+    // Everything after the sequence check. A parked action re-enters here
+    // with the same fields, so every target, lease, and conflict check repeats.
+    void action(Client& c, const std::vector<std::string>& f, std::uint64_t cap) {
+        const auto& command = f[0];
+        if (kSessionSeats) seat_lifetime.touch(Clock::now());
         if (c.token.empty() || f[2] != c.token || !refresh(c)) { send(c, refusal("stale_target")); return; }
         if (number(f[3]) != c.revision) { if (kProduction) revoke("stale_geometry"); send(c, refusal("stale_geometry")); return; }
         if (!available()) { revoke("session_unavailable", true); send(c, refusal("session_unavailable")); return; }
@@ -1225,6 +1327,15 @@ struct InputExperiment::Impl {
         }
         if (c.route == InputRoute::primary_foreground) {
             foreground_request(c, f, cap);
+            return;
+        }
+        if (kSessionSeats && !target_bound(c, cap)) {
+            // A new seat reached the target with its registry global event.
+            // Wait a bounded time for the client to bind it; never use the
+            // user's seat instead. A client that ignores extra seats refuses.
+            if (seat_lifetime.binding(Clock::now())) { pending.emplace(PendingAction{&c, f, cap}); return; }
+            revoke("client_not_bound");
+            send(c, refusal("client_not_bound", std::string_view{"agent_seat_not_bound"}));
             return;
         }
         if (command == "KEY") {
@@ -1343,6 +1454,36 @@ struct InputExperiment::Impl {
         send(c, refusal("action_not_admitted"));
         return false;
     }
+    // The target client holds this generation's pointer (or keyboard, for KEY).
+    bool target_bound(const Client& c, std::uint64_t cap) const {
+        const auto root = c.surface.lock();
+        if (!root || !seat_lifetime.published() || (cap == 2 && !keyboard_state)) return false;
+        const auto bound = [&](const auto& r) {
+            return !r->dead && r->wl->resource() && current(r->generation) && r->wl->client() == root->client();
+        };
+        return cap == 2 ? std::ranges::any_of(keyboards, bound) : std::ranges::any_of(pointers, bound);
+    }
+    void resume_pending(Clock::time_point now) {
+        if (!pending) return;
+        auto& waiting = *pending->client;
+        // revoke() answers a parked action; this only covers a vanished owner.
+        if (waiting.dead || lease != &waiting) { pending.reset(); return; }
+        if (!target_bound(waiting, pending->capability) && seat_lifetime.binding(now)) return;
+        const auto resumed = std::move(*pending);
+        pending.reset();
+        try { action(waiting, resumed.fields, resumed.capability); }
+        catch (...) {
+            revoke("invalid_request");
+            send(waiting, refusal("invalid_request"));
+        }
+    }
+    void retire_idle_seat(Clock::time_point now) {
+        if (!kSessionSeats || !seat_lifetime.published()) return;
+        const bool busy = lease || drag || pending || held_button || !held_keys.empty();
+        // The session ended (EOF, idle connection, STOP, disable, transition)
+        // or the claimed lane has had no action for the idle timeout.
+        if (!reservation || retired || suspended || (!busy && seat_lifetime.idle(now))) withdraw_seat();
+    }
     static int tick(void* data) {
         auto& self = *static_cast<Impl*>(data);
         try { self.step(); } catch (...) { self.revoke("internal_error"); }
@@ -1394,6 +1535,9 @@ struct InputExperiment::Impl {
         }
         if (lease && lease->dead) revoke("disconnected", true);
         if (reservation && reservation->dead) reservation = nullptr;
+        resume_pending(Clock::now());
+        retire_idle_seat(Clock::now());
+        destroy_withdrawn_seats(Clock::now());
         std::erase_if(clients, [](auto& c) { return c->dead; });
         std::erase_if(pointers, [](auto& p) { return p->dead; });
         std::erase_if(keyboards, [](auto& k) { return k->dead; });
@@ -1517,13 +1661,14 @@ std::string InputExperiment::status_json() const {
         if (!states.empty()) states += ',';
         const bool pointer_focus = std::ranges::any_of(lane->pointers, [](const auto& p) { return !p->dead && bool(p->focus); });
         const bool keyboard_focus = std::ranges::any_of(lane->keyboards, [](const auto& k) { return !k->dead && bool(k->focus); });
-        states += std::format(R"({{"lane":{},"epoch":"{}","desktop_generation":{},"reserved":{},"socket_cleanup":"{}","lease_active":{},"seat_resources":{},"pointer_resources":{},"keyboard_resources":{},"dispatches":{},"held_button":{},"held_keys":{},"drag_active":{},"pointer_focus":{},"keyboard_focus":{}}})",
+        states += std::format(R"({{"lane":{},"epoch":"{}","desktop_generation":{},"reserved":{},"socket_cleanup":"{}","lease_active":{},"seat_resources":{},"pointer_resources":{},"keyboard_resources":{},"dispatches":{},"held_button":{},"held_keys":{},"drag_active":{},"pointer_focus":{},"keyboard_focus":{},"seat_published":{},"seat_generation":{},"withdrawn_seat_globals":{},"bind_pending":{}}})",
             lane->lane, lane->epoch, lane->desktop_generation, lane->reservation != nullptr, lane->socket_cleanup, lane->lease != nullptr, lane->seats.size(), lane->pointers.size(), lane->keyboards.size(), lane->dispatches,
-            lane->held_button, lane->held_keys.size(), lane->drag.has_value(), pointer_focus, keyboard_focus);
+            lane->held_button, lane->held_keys.size(), lane->drag.has_value(), pointer_focus, keyboard_focus,
+            lane->seat_lifetime.published(), lane->seat_lifetime.generation(), lane->seat_lifetime.withdrawn(), lane->pending.has_value());
     }
     // Aggregate legacy fields remain available to existing test probes.
-    return std::format(R"({{"protocol":{},"test_only":{},"seat_lifetime":"compositor","upgrade":"desktop_restart","transport_ready":{},"epoch":"{}","lease_active":{},"seat_resources":{},"pointer_resources":{},"keyboard_resources":{},"dispatches":{},"lanes":[{}]}})",
-        kProduction ? 3 : 0, !kProduction, !lanes_[0]->suspended && !lanes_[1]->suspended, lanes_[0]->epoch, lanes_[0]->lease != nullptr || lanes_[1]->lease != nullptr,
+    return std::format(R"({{"protocol":{},"test_only":{},"seat_lifetime":"{}","upgrade":"desktop_restart","transport_ready":{},"epoch":"{}","lease_active":{},"seat_resources":{},"pointer_resources":{},"keyboard_resources":{},"dispatches":{},"lanes":[{}]}})",
+        kProduction ? 3 : 0, !kProduction, kSessionSeats ? "session" : "compositor", !lanes_[0]->suspended && !lanes_[1]->suspended, lanes_[0]->epoch, lanes_[0]->lease != nullptr || lanes_[1]->lease != nullptr,
         lanes_[0]->seats.size() + lanes_[1]->seats.size(), lanes_[0]->pointers.size() + lanes_[1]->pointers.size(),
         lanes_[0]->keyboards.size() + lanes_[1]->keyboards.size(), lanes_[0]->dispatches + lanes_[1]->dispatches, states);
 }
