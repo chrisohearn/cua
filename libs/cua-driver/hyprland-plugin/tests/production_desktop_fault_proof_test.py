@@ -30,7 +30,7 @@ def plan(kind='config_disable'):
 
 def status(enabled=True):
     return {'configured': enabled, 'transport': {'ready': enabled}, 'input': {
-        'protocol': 3, 'test_only': False, 'seat_lifetime': 'compositor', 'upgrade': 'desktop_restart',
+        'protocol': 3, 'test_only': False, 'seat_lifetime': 'session', 'upgrade': 'desktop_restart',
         'transport_ready': enabled, 'lanes': [
             {'lane': lane, 'held_button': 0, 'held_keys': 0, 'drag_active': False, 'lease_active': False}
             for lane in (0, 1)]}}
@@ -591,7 +591,9 @@ class SafetyTests(unittest.TestCase):
         for enabled in (True, False):
             with patch.object(proof, '_hypr', return_value=json.dumps(status(enabled))):
                 proof.production_status('exact', enabled)
-        mutations = [('protocol', 0), ('test_only', True), ('seat_lifetime', 'action'), ('transport_ready', True)]
+        # 'compositor' is the old always-advertised contract (#4257), now refused.
+        mutations = [('protocol', 0), ('test_only', True), ('seat_lifetime', 'action'),
+                     ('seat_lifetime', 'compositor'), ('transport_ready', True)]
         for key, value in mutations:
             candidate = status(False)
             candidate['input'][key] = value

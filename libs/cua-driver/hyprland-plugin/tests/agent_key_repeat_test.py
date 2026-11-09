@@ -104,7 +104,7 @@ struct CWlSeat {
 struct Client { WP<Surface> surface; };
 
 struct Lane {
-    struct Keyboard { SP<CWlKeyboard> wl; bool dead = false; WP<Surface> focus; };
+    struct Keyboard { SP<CWlKeyboard> wl; bool dead = false; WP<Surface> focus; std::uint64_t generation = 0; };
     std::vector<std::unique_ptr<Keyboard>> keyboards;
     std::vector<std::uint32_t> held_keys;
     xkb_keymap* keymap = &canonical_map;
@@ -118,6 +118,14 @@ struct Lane {
     std::uint32_t serial() const { return 1; }
     void send(Client&, std::string response) { responses.push_back(std::move(response)); }
     bool consume_grant(Client&, std::uint64_t) { return true; }
+    // Generation 1 is the published seat; anything else was withdrawn.
+    bool current(std::uint64_t generation) const { return generation == 1; }
+    template <class Resource>
+    static std::size_t client_resources(const std::vector<std::unique_ptr<Resource>>& resources, int client) {
+        return static_cast<std::size_t>(std::ranges::count_if(resources, [&](const auto& r) {
+            return !r->dead && r->wl->client() == client;
+        }));
+    }
     void finish_foreground() {}
     void retire_grant() {}
     // PRODUCTION_METHODS
@@ -125,9 +133,9 @@ struct Lane {
         // PRODUCTION_KEY
         complete_action();
     }
-    CWlKeyboard& bind(int version) {
+    CWlKeyboard& bind(int version, std::uint64_t generation = 1) {
         CWlSeat seat{version};
-        add_keyboard(&seat, static_cast<std::uint32_t>(keyboards.size() + 1));
+        add_keyboard(&seat, static_cast<std::uint32_t>(keyboards.size() + 1), generation);
         return *keyboards.back()->wl;
     }
 };
@@ -173,6 +181,8 @@ int main() {
     // A real rate is only safe because KEY holds nothing past its own request:
     // shift+A is pressed, released and left inside one production handler.
     lane.keyboards.clear();
+    // A keyboard bound through a withdrawn seat generation stays inert (#4257).
+    auto& withdrawn = lane.bind(9, 0);
     auto& typing = lane.bind(9);
     const auto surface = std::make_shared<Surface>();
     Client client; client.surface = surface;
@@ -183,6 +193,8 @@ int main() {
     check(keys == Log{"key 42 down", "key 30 down", "key 30 up", "key 42 up", "leave"},
           "KEY releases every key it pressed before leaving focus");
     check(lane.held_keys.empty(), "no key is held after the KEY request returns");
+    check(std::ranges::none_of(withdrawn.log, [](const auto& e) { return e == "enter" || e.starts_with("key "); }),
+          "a withdrawn seat generation's keyboard receives no focus or keys");
     std::cout << "agent key repeat tests passed\n";
 }
 '''
@@ -201,8 +213,9 @@ def production_fixture(source):
         raise AssertionError('production repeat_info defaults not found')
     methods = '\n'.join(method(source, name) for name in (
         'sync_key_repeat', 'add_keyboard', 'keyboard_enter', 'key', 'leave_keyboard', 'complete_action'))
-    # The independent-route KEY branch of request(), not the foreground one.
-    branch = re.search(r'            foreground_request\(c, f, cap\);\n            return;\n        }\n'
+    # The independent-route KEY branch of action(), right after its seat-bind
+    # gate, not the foreground one.
+    branch = re.search(r'"agent_seat_not_bound"\}\)\);\n            return;\n        }\n'
                        r'        if \(command == "KEY"\) \{\n(.*?)^        } else \{', source, re.M | re.S)
     if not branch:
         raise AssertionError('production independent KEY branch not found')

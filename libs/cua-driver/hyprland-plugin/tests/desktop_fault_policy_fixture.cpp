@@ -35,6 +35,7 @@ struct Pointer {
     bool resource() const { return resource_live; }
 };
 struct Drag { Client* client; DragGeometry geometry{1}; };
+struct PendingAction { Client* client; std::vector<std::string> fields; std::uint64_t capability; };
 struct Trace { void mark(const char*, unsigned) {} };
 void wl_event_source_remove(void*) {}
 int close(int) { return 0; }
@@ -63,6 +64,7 @@ struct Lane {
     Client* lease = nullptr;
     Client* reservation = nullptr;
     std::optional<Drag> drag;
+    std::optional<PendingAction> pending;
     InputGrant grant;
     Clock::time_point expires;
     std::vector<unsigned> held_keys{42};
@@ -173,6 +175,23 @@ int main() {
             case 5: l.cancel_authority("primary_target_busy", false); break;
         }
         l.guard_targets(); l.check_inert(false);
+    }
+    // An action parked for a new seat's bind gets the fault as its only reply.
+    for (int fault = 0; fault < 4; ++fault) {
+        Lane l; l.drag.reset();
+        l.pending.emplace(PendingAction{l.lease, {"CLICK"}, 1});
+        auto* waiting = l.lease;
+        switch (fault) {
+            case 0: l.desktop_transition(); break;
+            case 1: l.suspend(); break;
+            case 2: l.cancel_authority("stopped"); break;
+            case 3: l.session = false; l.guard_targets(); break;
+        }
+        check(!l.pending, "fault left an action parked");
+        const char* reason = fault == 0 ? "desktop_changed" : fault == 1 ? "plugin_disabled" :
+            fault == 2 ? "stopped" : "cancelled";
+        check(l.responses.size() == 1 && l.responses.front() == reason, "parked action not answered exactly once");
+        check(!waiting->dead || fault != 2, "STOP must not close the connection");
     }
     std::cout << "production desktop fault policy tests passed\n";
 }

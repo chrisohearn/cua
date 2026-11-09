@@ -69,8 +69,9 @@ process-termination proof does not certify MCP cancellation or session end.
 
 Do not replay canceled, partial, or unknown actions. A later new call may
 acquire a fresh target after common permission, lifecycle, identity, geometry,
-compatibility, and conflict checks. Config disable/re-enable preserves
-session-lifetime seats; replacing the plugin requires a desktop restart.
+compatibility, and conflict checks. Agent seats exist only while an admitted
+isolated-input session uses them; config disable ends those sessions.
+Replacing the plugin requires a desktop restart.
 
 ## Evidence and remaining gates
 
