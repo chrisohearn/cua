@@ -24,7 +24,10 @@ This branch adds an opt-in [input v3 candidate](protocol/cua-input-v3.md) using
 Driver's existing per-action permission checks and two independent compositor
 seats. It does not require a signer or an Omarchy-specific approval panel.
 Each agent seat is advertised only while an admitted isolated-input session
-uses its lane, so apps see only the user's seat when no agent is working; see
+uses its lane, so apps see only the user's seat when no agent is working. A
+withdrawn seat global is destroyed only after libwayland reports that no
+client can still bind it, never on a timer, and each lane retains a bounded
+number of them; see
 [agent seat lifetime](protocol/cua-input-v3.md#agent-seat-lifetime).
 The candidate remains experimental and unreleased. A source version of
 `0.23.2` does not mean released Driver `0.23.2` contains these changes.

@@ -58,6 +58,7 @@ std::uint32_t event_ms() { return 0; }
 std::uint64_t number(const std::string& value) { return std::stoull(value); }
 std::string refusal(const char* code) { return code; }
 constexpr std::size_t kMaxResources = 512;
+constexpr std::size_t kMaxLaneResources = 2048;
 
 void check(bool ok, const std::string& why) {
     if (!ok) { std::cerr << "FAIL: " << why << '\n'; std::exit(1); }
