@@ -206,12 +206,13 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
         } = event
         {
             match interface.as_str() {
-                "wl_seat" => state.seats.add(registry.bind::<wl_seat::WlSeat, _, _>(
-                    name,
-                    version.min(2),
-                    qh,
-                    (),
-                )),
+                "wl_seat" => {
+                    let version = version.min(2);
+                    state.seats.add(
+                        registry.bind::<wl_seat::WlSeat, _, _>(name, version, qh, ()),
+                        version,
+                    )
+                }
                 "ext_idle_notifier_v1" => {
                     let version = version.min(2);
                     state.notifier = Some((
