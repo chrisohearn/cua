@@ -372,14 +372,30 @@ class RunTests(unittest.TestCase):
             self.assertEqual(report['result'], 'failed')
             self.assertEqual(report['continuous_isolation_across_transitions'], 'unproven')
 
-    def episode(self, failure=None, *, retained=False):
+    def test_retired_retained_plan_fails_without_native_setup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / 'plan.json'
+            selected = plan()
+            selected['fault'].update(pointer_cleanup='retained_inert', min_motion_px=12)
+            path.write_text(json.dumps(selected))
+            args = SimpleNamespace(plan=path, evidence=root / 'evidence')
+            with patch.object(proof, 'ActiveLockFixture') as fixture, patch.object(proof, 'DirectMCP') as launch, \
+                    patch('builtins.print'):
+                self.assertEqual(proof.run(args), 1)
+            fixture.assert_not_called()
+            launch.assert_not_called()
+            report = json.loads((args.evidence / 'result.json').read_text())
+            self.assertIn('retained_inert retired', report['error'])
+
+    def episode(self, failure=None, *, motion=False):
         """Synthetic run ordering only; all native/Driver boundaries are mocked."""
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             root = Path(directory)
             path = root / 'plan.json'
             selected_plan = plan()
-            if retained:
-                selected_plan['fault'].update(pointer_cleanup='retained_inert', min_motion_px=12)
+            if motion:
+                selected_plan['fault'].update(pointer_cleanup='cleared', min_motion_px=12)
             path.write_text(json.dumps(selected_plan))
             args = SimpleNamespace(plan=path, evidence=root / 'evidence', driver=root / 'driver',
                 trace_socket=root / 'trace', foreground_journal=root / 'journal', primary_grab=root / 'grab')
@@ -405,22 +421,15 @@ class RunTests(unittest.TestCase):
                 return {'result': 'restored', 'after': status(3)}
             fixture.restore.side_effect = restore
             initial, boundary = trace([ACTIVE[0]]), trace(CANCEL)
-            if retained:
-                fixture.config = {'pointer_cleanup': 'retained_inert', 'min_motion_px': 12}
+            if motion:
+                fixture.config = {'pointer_cleanup': 'cleared', 'min_motion_px': 12}
                 boundary = motion_gate(fixture.record)
-                def retained_restore(*, cleanup=False):
-                    result = restore(cleanup=cleanup)
-                    result['after'] = retained_status(3)
-                    return result
-                fixture.restore.side_effect = retained_restore
             if failure == 'release':
                 boundary = trace(ACTIVE + [(8, 'agent_cancel', 1, 0)])
             transition = proof.stopped_prefix(trace(CANCEL + [(14, 'keyboard_focus', 0, 0)]))
-            if retained:
+            if motion:
                 transition_page = deepcopy(boundary)
-                transition_page['events'].append([9, 14_000_000, 'keyboard_focus', 100, 100, 0, 0])
-                if failure == 'unlock_leave':
-                    transition_page['events'].append([10, 15_000_000, 'pointer_leave', 100, 100, 1, 0])
+                transition_page['events'].append([10, 14_000_000, 'keyboard_focus', 100, 100, 0, 0])
                 transition_page['count'] = len(transition_page['events'])
                 transition = proof.stopped_prefix(transition_page)
             recovery = trace([(0, 'start', 0, 0), (1, 'agent_admitted', 1, 0),
@@ -455,11 +464,9 @@ class RunTests(unittest.TestCase):
             def status_read(*_args):
                 if len(clients) == 3:
                     return final
-                if retained:
-                    value = retained_status(3 if 'explicit_unlock' in events else 2)
-                    if failure == 'lost_presence':
-                        value['input']['lanes'][0]['pointer_focus'] = False
-                    return value
+                if failure == 'focus_after':
+                    # A lock that leaves pointer focus behind is not the cleared outcome.
+                    return retained_status(3 if 'explicit_unlock' in events else 2)
                 return status(3 if 'explicit_unlock' in events else 2)
             snapshot = {'window_bounds': {'x': 10, 'y': 20, 'width': 800, 'height': 600},
                         'proof_image': 'fresh.png', 'proof_observation_started_ns': 10}
@@ -531,26 +538,32 @@ class RunTests(unittest.TestCase):
         self.assertIn('failed-transition-trace.json', evidence)
 
 
-    def test_full_retained_episode_checks_unlock_and_pre_recovery_presence(self):
-        result, evidence, events, clients = self.episode(retained=True)
+    def test_full_motion_episode_requires_cleared_focus_before_recovery(self):
+        result, evidence, events, clients = self.episode(motion=True)
         self.assertEqual(result, 0, evidence['result.json'])
         self.assertEqual(evidence['result.json']['continuous_isolation_across_transitions'], 'unproven')
         self.assertLess(events.index('explicit_unlock'), events.index('launch_50'))
-        for failure in ('unlock_leave', 'lost_presence'):
-            result, evidence, events, clients = self.episode(failure, retained=True)
-            with self.subTest(failure=failure):
+        for motion in (False, True):
+            result, evidence, events, clients = self.episode('focus_after', motion=motion)
+            with self.subTest(motion=motion):
                 self.assertEqual(result, 1)
                 self.assertNotIn('launch_50', events)
                 self.assertEqual(evidence['result.json']['recovery']['result'], 'unproven')
 
 
-class RetainedPointerTests(unittest.TestCase):
+RETIRED = 'retained_inert retired: session-lifetime agent seats withdraw on desktop transitions'
+
+
+class PointerCleanupPolicyTests(unittest.TestCase):
+    """Lock ends the session and withdraws the agent seat (#4257): only 'cleared' certifies."""
+
     def test_active_lock_accepts_opt_in_motion_and_cleanup_only(self):
         value = plan()
-        value['fault'].update(pointer_cleanup='retained_inert', min_motion_px=12.5)
+        value['fault'].update(pointer_cleanup='cleared', min_motion_px=12.5)
         proof.validate_plan(value)
         # Policy and threshold validity are owned by desktop_fault; one case each proves wiring.
         for change, error in (({'pointer_cleanup': 'unknown'}, 'unknown pointer cleanup policy'),
+                              ({'pointer_cleanup': 'retained_inert'}, RETIRED),
                               ({'extra': True}, 'unsupported fault option'),
                               ({'min_motion_px': 0}, 'positive finite min_motion_px')):
             bad = deepcopy(value)
@@ -558,16 +571,19 @@ class RetainedPointerTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaisesRegex(AssertionError, error):
                 proof.validate_plan(bad)
 
-    def test_retained_cancellation_both_lanes_is_not_transition_isolation(self):
+    def test_cleared_cancellation_both_lanes_is_not_transition_isolation(self):
         for lane in (1, 2):
             value = record()
             boundary = motion_gate(value, lane)
             result = proof.verify_cancelled(boundary, value, action())
             self.assertEqual(result['result'], 'verified')
             self.assertEqual(result['continuous_primary_isolation'], 'unproven')
-            with self.assertRaises(AssertionError):
-                proof.cancelled_status(value['gate_status'], value['after'])
-            for key, replacement in (('pointer_focus', False), ('reserved', True), ('held_keys', 1),
+            proof.cancelled_status(value['gate_status'], value['after'])
+            with self.assertRaisesRegex(AssertionError, RETIRED):
+                proof.cancelled_status(value['gate_status'], value['after'], 'retained_inert')
+            with self.assertRaisesRegex(AssertionError, RETIRED):
+                proof.verify_cancelled(boundary, {**value, 'pointer_cleanup': 'retained_inert'}, action())
+            for key, replacement in (('pointer_focus', True), ('reserved', True), ('held_keys', 1),
                                       ('held_button', 272), ('drag_active', True), ('lease_active', True),
                                       ('keyboard_focus', True), ('dispatches', 1)):
                 bad = deepcopy(value)
@@ -575,24 +591,27 @@ class RetainedPointerTests(unittest.TestCase):
                 with self.subTest(lane=lane, key=key), self.assertRaises(AssertionError):
                     proof.verify_cancelled(boundary, bad, action())
 
-    def test_motion_and_retention_cannot_accept_pointer_leave_reentry_or_stale_status(self):
+    def test_motion_gate_cannot_accept_reentry_cross_lane_cleanup_or_stale_status(self):
         value = record()
         boundary = motion_gate(value)
-        for kind in ('pointer_leave', 'pointer_enter', 'pointer_motion'):
+        # The seat withdrawal's own pointer_leave is the cleared expectation.
+        self.assertEqual(boundary['events'][-1][2], 'pointer_leave')
+        proof.verify_cancelled(boundary, value, action())
+        for kind, lane in (('pointer_enter', 1), ('pointer_motion', 1), ('pointer_leave', 2)):
             bad = deepcopy(boundary)
-            bad['events'].append([9, 10_000_000, kind, 100, 100, 1, 0])
+            bad['events'].append([10, 10_000_000, kind, 100, 100, lane, 0])
             bad['count'] += 1
-            with self.subTest(kind=kind), self.assertRaises(AssertionError):
+            with self.subTest(kind=kind, lane=lane), self.assertRaises(AssertionError):
                 proof.verify_cancelled(bad, value, action())
         for change in ({'min_motion_px': 14}, {'status_started_ns': -300_000_000}, {'lane': 2}):
             with self.subTest(change=change), self.assertRaises(AssertionError):
                 proof.verify_cancelled(boundary, {**value, **change}, action())
 
     def test_motion_poll_preserves_short_ready_window_and_brackets_status(self):
-        for failure in (None, 'insufficient', 'lane', 'stale'):
+        for failure in (None, 'insufficient', 'lane', 'stale', 'focus_after'):
             fixture = ready_fixture()
-            fixture.config.update(pointer_cleanup='retained_inert', min_motion_px=12)
-            fixture.record.update(pointer_cleanup='retained_inert', min_motion_px=12)
+            fixture.config.update(pointer_cleanup='cleared', min_motion_px=12)
+            fixture.record.update(pointer_cleanup='cleared', min_motion_px=12)
             value = record()
             motion_gate(value)
             first, page = deepcopy(value['prefix']), deepcopy(value['prefix'])
@@ -608,12 +627,18 @@ class RetainedPointerTests(unittest.TestCase):
                 return result, proof.active_drags(result)
             def read(*args):
                 calls.append(('status', None))
-                return value['gate_status'] if len(calls) == 2 else retained_status()
+                return value['gate_status'] if len(calls) == 2 else (
+                    retained_status() if failure == 'focus_after' else status(2))
             with self.subTest(failure=failure), patch.object(proof, 'power'), \
                  patch.object(proof, 'poll_fault_active', side_effect=poll), \
                  patch.object(proof, 'production_status', side_effect=read), \
                  patch.object(proof.time, 'monotonic_ns', side_effect=[-300_000_000 if failure == 'stale' else 5_000_000, 6_000_000, 12_000_000]):
-                if failure:
+                if failure == 'focus_after':
+                    # Pointer focus that survives the acknowledged lock fails the episode.
+                    with self.assertRaises(AssertionError):
+                        fixture.inject(Mock(), trace([ACTIVE[0]]), Mock(done=Mock(return_value=False)))
+                    self.assertEqual(fixture.child.stdin.getvalue(), b'LOCK\n')
+                elif failure:
                     with self.assertRaises(AssertionError):
                         fixture.inject(Mock(), trace([ACTIVE[0]]), Mock(done=Mock(return_value=False)))
                     self.assertFalse(fixture.requested)

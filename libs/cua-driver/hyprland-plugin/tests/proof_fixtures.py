@@ -76,14 +76,22 @@ def status(generation=1, held=False):
 
 
 def retained_status(generation=2, lane=1):
-    """Cleared status that keeps passive pointer focus on one (1-based) lane."""
+    """Status that still shows pointer focus on one (1-based) lane.
+
+    Session-lifetime agent seats withdraw on desktop transitions (#4257), so a
+    post-transition status like this is a failure, and the retired
+    pointer_cleanup=retained_inert policy that expected it is rejected.
+    """
     value = status(generation)
     value['input']['lanes'][lane - 1]['pointer_focus'] = True
     return value
 
 
 def motion_gate(record, lane=1):
-    """A 13px surface-local movement, with the same held lane across status."""
+    """A 13px surface-local movement, with the same held lane across status.
+
+    The transition leaves every lane cleared: no pointer focus survives it.
+    """
     gate_page = trace([(0, 'start', 0, 0), (1, 'agent_admitted', lane, 0),
                        (2, 'agent_drag_start', lane, 0), (2.5, 'pointer_enter', lane, 0),
                        (3, 'pointer_button', lane, 1), (4, 'pointer_motion', lane, 0)])
@@ -95,12 +103,13 @@ def motion_gate(record, lane=1):
         gate['input']['lanes'].reverse()
         for index, row in enumerate(gate['input']['lanes']):
             row['lane'], row['epoch'] = index, str(index + 1) * 32
-    record.update(pointer_cleanup='retained_inert', min_motion_px=12,
+    record.update(pointer_cleanup='cleared', min_motion_px=12,
                   prefix=gate_page, gate_first=deepcopy(gate_page), lane=lane,
-                  status_started_ns=5_000_000, gate_status=gate, after=retained_status(2, lane))
+                  status_started_ns=5_000_000, gate_status=gate, after=status(2))
     boundary = deepcopy(gate_page)
     boundary['events'] += [[7, 8_000_000, 'agent_cancel', 100, 100, lane, 0],
-                           [8, 9_000_000, 'pointer_button', 100, 100, lane, 0]]
+                           [8, 9_000_000, 'pointer_button', 100, 100, lane, 0],
+                           [9, 9_500_000, 'pointer_leave', 100, 100, lane, 0]]
     boundary['count'] = len(boundary['events'])
     return boundary
 

@@ -15,6 +15,9 @@ continuous isolation across these transitions is explicitly UNPROVEN. Each
 settled action has an unfiltered strict trace. Recovery is one newly grounded
 click, with visible Calc effect under the restored foreground fixture grab.
 No product wake/unlock policy, replay, source fixture edit, or native setup.
+Optional fault.pointer_cleanup accepts only 'cleared': lock ends the
+isolated-input session, which withdraws the session-lifetime agent seat and
+clears its pointer focus (#4257), so retained_inert hover is rejected.
 Portable tests are orchestration checks, never native certification.
 """
 import argparse
@@ -66,15 +69,12 @@ def validate_plan(plan):
 
 
 def stable_status(before, after, *, advanced=False, policy='cleared'):
-    # By default only a pre-transition baseline may contain an inert pointer.
+    # Only a pre-transition baseline may contain an inert pointer.
     pointer_cleanup({'pointer_cleanup': policy})
-    retained = policy == 'retained_inert'
-    old = idle_lanes(before) if advanced or retained else lanes(before, cleared=True)
-    new = idle_lanes(after) if retained else lanes(after, cleared=True)
+    old = idle_lanes(before) if advanced else lanes(before, cleared=True)
+    new = lanes(after, cleared=True)
     assert set(old) == set(new)
     for lane in old:
-        if retained:
-            assert old[lane]['pointer_focus'] is new[lane]['pointer_focus'], 'pointer presence changed'
         assert old[lane].get('reserved') is False and new[lane].get('reserved') is False
         assert old[lane]['epoch'] == new[lane]['epoch'], 'compositor lane replaced'
         assert old[lane]['dispatches'] == new[lane]['dispatches'], 'unexpected dispatch'
@@ -274,17 +274,6 @@ def verify_refusal_cleanup(prefix, stopped):
     return isolation
 
 
-def verify_inert_transition(initial, stopped):
-    """Retain raw lock analysis without claiming primary transition isolation."""
-    analysis = analyze(stopped)
-    assert analysis.get('telemetry_complete') is True, analysis
-    trace_interval(initial, initial)
-    assert stopped['events'][:initial['count']] == initial['events'], 'transition trace history changed'
-    assert not any(row[5] in (1, 2) for row in stopped['events'][initial['count']:]), 'synthetic activity while pointer must remain inert'
-    return {'continuous_primary_isolation': 'unproven', 'raw_primary_analysis': analysis,
-            'synthetic_pointer_continuity': 'verified'}
-
-
 def click_once(client, arguments, record, save, name):
     """Persist the attempt before transport; an exception never permits replay."""
     assert record['outcome'] == 'unknown' and record['replayed'] is False
@@ -392,16 +381,8 @@ def run(args):
         probe = prepare_refusal_click(observer, spec, save)
         arguments, prepared_ns = probe['arguments'], probe['prepared_ns']
         policy = pointer_cleanup(fixture.config)
-        if policy == 'retained_inert':
-            lock_initial = start_trace()
         fixture.lock()
         settle_locked(fixture)
-        if policy == 'retained_inert':
-            trace.exchange('TRACE_STOP')
-            tracing = False
-            lock_stopped = trace.collect()
-            save('lock-transition-trace.json', lock_stopped)
-            save('lock-transition-analysis.json', verify_inert_transition(lock_initial, lock_stopped))
         locked_primary, locked_foreground = wm(), state(args.foreground_journal)
         refusal = report['refusal'] = {**probe, 'outcome': 'unknown', 'replayed': False,
             'pointer_cleanup': policy,
@@ -423,16 +404,11 @@ def run(args):
         fixture.locked()
         refusal.update(after=production_status(fixture.config), trace_after=trace.collect(), observed_ns=time.monotonic_ns())
         refusal['verification'] = verify_refusal(refusal)
-        if policy == 'retained_inert':
-            # Keep the same trace running through readback and graceful unlock.
-            # The strict settled prefix is separate from raw transition analysis.
-            stopped = stopped_prefix(trace.collect())
-        else:
-            trace.exchange('TRACE_STOP')
-            tracing = False
-            stopped = trace.collect()
-        save('refusal-trace-prefix.json' if policy == 'retained_inert' else 'refusal-trace.json', stopped)
-        refusal['analysis_uses_end_sentinel'] = policy == 'retained_inert'
+        trace.exchange('TRACE_STOP')
+        tracing = False
+        stopped = trace.collect()
+        save('refusal-trace.json', stopped)
+        refusal['analysis_uses_end_sentinel'] = False
         refusal['isolation'] = verify_refusal_cleanup(refusal['trace_after'], stopped)
         refusal['primary_readback'] = {'before': locked_primary, 'after': wm(),
             'foreground_before': locked_foreground, 'foreground_after': state(args.foreground_journal)}
@@ -442,12 +418,6 @@ def run(args):
         save('refusal.json', refusal)
         restoration = fixture.restore()
         save('restoration.json', restoration)
-        if policy == 'retained_inert':
-            trace.exchange('TRACE_STOP')
-            tracing = False
-            unlock_stopped = trace.collect()
-            save('unlock-transition-trace.json', unlock_stopped)
-            save('unlock-transition-analysis.json', verify_inert_transition(refusal['trace_before'], unlock_stopped))
         fixture.check_targets()
         power(fixture.config, True)
         # All intentional focus/cursor/grab setup precedes the recovery trace.
@@ -514,7 +484,7 @@ def run(args):
         fixture.check_targets()
         final_status = production_status(fixture.config)
         # Exactly the one completed recovery click may advance dispatch counts.
-        old = lanes(restoration['after'], cleared=True, allow_passive=policy == 'retained_inert')
+        old = lanes(restoration['after'], cleared=True)
         new = lanes(final_status, cleared=True, allow_passive=True)
         assert sum(new[k]['dispatches'] - old[k]['dispatches'] for k in old) == 1
         for key in old:
