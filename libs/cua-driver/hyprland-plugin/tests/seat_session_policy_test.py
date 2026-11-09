@@ -58,7 +58,7 @@ struct Lane {
     }
     void revoke(const char* reason) { revoked.push_back(reason); }
     void send(Client&, const std::string& packet) { sent.push_back(packet); }
-    void withdraw_seat() { ++withdrawals; seat_lifetime.withdraw(Clock::now()); }
+    void withdraw_seat() { ++withdrawals; seat_lifetime.withdraw(); }
     // PRODUCTION_METHODS
 };
 
@@ -150,9 +150,12 @@ class SeatSessionPolicyTest(unittest.TestCase):
         source = (ROOT / 'src/input_experiment.cpp').read_text()
         step = method(source, 'step')
         # Fail if the tested decisions are disconnected from the production timer.
-        for call in ('resume_pending(Clock::now());', 'retire_idle_seat(Clock::now());',
-                     'destroy_withdrawn_seats(Clock::now());'):
+        for call in ('resume_pending(Clock::now());', 'retire_idle_seat(Clock::now());'):
             self.assertIn(call, step)
+        # Withdrawn globals are never destroyed on a timer: only libwayland's
+        # withdrawn listener (or plugin teardown) may destroy one.
+        self.assertNotIn('wl_global_destroy', step)
+        self.assertNotRegex(source, r'destroy_delay|expired\(now\)')
         # A background action parks only behind the bind gate, never the foreground route.
         self.assertRegex(source, r'foreground_request\(c, f, cap\);\n            return;\n        }\n'
                                  r'        if \(kSessionSeats && !target_bound\(c, cap\)\) \{')

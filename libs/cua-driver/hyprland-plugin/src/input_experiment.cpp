@@ -34,6 +34,7 @@
 #include <linux/input-event-codes.h>
 #include <wayland.hpp>
 #include <wayland-server-core.h>
+#include <wayland-version.h>
 
 #ifdef CUA_HYPRLAND_TEST_INPUT
 #include <openssl/evp.h>
@@ -66,12 +67,26 @@
 #error Select exactly one input admission mode
 #endif
 
+// libwayland 1.26 reports when a removed global can no longer receive binds.
+// Weak, so a plugin built against 1.26 headers still loads on an older
+// libwayland-server; without the listener a withdrawn global is never
+// destroyed before plugin teardown.
+#if WAYLAND_VERSION_MAJOR > 1 || (WAYLAND_VERSION_MAJOR == 1 && WAYLAND_VERSION_MINOR >= 26)
+#define CUA_HYPRLAND_GLOBAL_WITHDRAWN_LISTENER 1
+#pragma weak wl_global_set_withdrawn_listener
+#endif
+
 namespace cua::hyprland {
 namespace {
 using Clock = std::chrono::steady_clock;
 constexpr std::size_t kMaxPacket = 2048;
 constexpr std::size_t kMaxClients = 8;
+// Per client: each publication is a new global, and a client that never
+// releases withdrawn seats must not exhaust the lane for others.
 constexpr std::size_t kMaxResources = 512;
+// Per lane, across every client: one same-session process can open many
+// Wayland connections, so each retained resource vector is also bounded.
+constexpr std::size_t kMaxLaneResources = 2048;
 #ifdef CUA_HYPRLAND_INPUT
 constexpr bool kProduction = true;
 #else
@@ -174,7 +189,9 @@ struct InputExperiment::Impl {
     struct Pointer { SP<CWlPointer> wl; bool dead = false; WP<CWLSurfaceResource> focus; std::uint64_t generation = 0; };
     struct Keyboard { SP<CWlKeyboard> wl; bool dead = false; WP<CWLSurfaceResource> focus; std::uint64_t generation = 0; };
     struct Touch { SP<CWlTouch> wl; bool dead = false; std::uint64_t generation = 0; };
-    // Bind data for one published wl_seat global. It outlives the global.
+    // Bind data for one published wl_seat global. It lives exactly as long as
+    // the global: both are destroyed together once libwayland reports the
+    // withdrawn global unbindable, or at plugin teardown.
     struct SeatGlobal { Impl* owner = nullptr; std::uint64_t generation = 0; wl_global* global = nullptr; };
     struct Client {
         Impl* owner = nullptr;
@@ -412,20 +429,28 @@ struct InputExperiment::Impl {
     }
     // Advertises this lane's wl_seat for a new generation. Clients see a
     // registry global event and may bind it.
+    // Refuses at the withdrawn-global bound (AgentSeatLifetime::max_withdrawn);
+    // the admission path then refuses the action and never uses the user's seat.
     bool publish_seat() {
         if (seat_lifetime.published()) return true;
-        if (retired) return false;
+        if (retired || seat_lifetime.exhausted()) return false;
         auto record = std::make_unique<SeatGlobal>(SeatGlobal{this, seat_lifetime.next_generation(), nullptr});
         record->global = wl_global_create(g_pCompositor->m_wlDisplay, &wl_seat_interface, 9, record.get(), bind_seat);
         if (!record->global) return false;
+#ifdef CUA_HYPRLAND_GLOBAL_WITHDRAWN_LISTENER
+        if (wl_global_set_withdrawn_listener) wl_global_set_withdrawn_listener(record->global, seat_withdrawn);
+#endif
+        // Never destroy an advertised global here: published() and exhausted()
+        // were checked above, so the lifetime records it.
         seat_lifetime.publish(record.release(), Clock::now());
         return true;
     }
     // Stops advertising the current generation. No display-wide global filter
     // is involved: wl_global_remove only tells clients the seat is gone.
     // Existing resources become inert (capabilities 0) and stay valid, so late
-    // release and set_cursor requests never hit a dead object. The global is
-    // destroyed after AgentSeatLifetime::destroy_delay.
+    // release and set_cursor requests never hit a dead object. The global stays
+    // allocated, so a bind that raced global_remove gets an inert seat, until
+    // seat_withdrawn reports that no registry can still bind it.
     void withdraw_seat() {
         if (!seat_lifetime.published()) return;
         leave_pointer();
@@ -434,14 +459,19 @@ struct InputExperiment::Impl {
         for (auto& seat : seats)
             if (!seat->dead && seat->generation == generation && seat->wl->resource())
                 seat->wl->sendCapabilities(static_cast<wl_seat_capability>(0));
-        wl_global_remove(seat_lifetime.handle()->global);
-        seat_lifetime.withdraw(Clock::now());
+        // Record the withdrawal first: libwayland calls seat_withdrawn from
+        // inside wl_global_remove when no registry was offered this global.
+        auto* record = seat_lifetime.withdraw();
+        wl_global_remove(record->global);
     }
-    void destroy_withdrawn_seats(Clock::time_point now) {
-        for (auto* record : seat_lifetime.expired(now)) {
-            wl_global_destroy(record->global);
-            delete record;
-        }
+    // libwayland's withdrawn listener: every registry that was offered this
+    // global acknowledged its removal through wl_fixes or was destroyed, so no
+    // bind request can still name it. Only now is destroying it safe.
+    static void seat_withdrawn(wl_global* global) {
+        auto* record = static_cast<SeatGlobal*>(wl_global_get_user_data(global));
+        if (!record || record->global != global || !record->owner->seat_lifetime.release(record)) return;
+        wl_global_destroy(global);
+        delete record;
     }
     void resume() {
         if (retired || desktop_generation == UINT64_MAX)
@@ -503,17 +533,18 @@ struct InputExperiment::Impl {
             if (!seat->dead && seat->wl->resource())
                 seat->wl->sendCapabilities(static_cast<wl_seat_capability>(0));
         withdraw_seat();
-        // The retired lane is intentionally leaked with this NODELETE module.
-        // Its timer keeps running and destroys withdrawn globals after the delay.
+        // The retired lane is intentionally leaked with this NODELETE module,
+        // so seat_withdrawn can still destroy its withdrawn globals later.
     }
     ~Impl() {
         revoke("plugin_shutdown");
         // Reached only when initialization fails, before any client can bind.
-        if (seat_lifetime.published()) {
-            wl_global_remove(seat_lifetime.handle()->global);
-            seat_lifetime.withdraw(Clock::now());
+        // Teardown destroys every global this lane still holds, current or
+        // withdrawn; none can call back into this object afterwards.
+        for (auto* record : seat_lifetime.teardown()) {
+            wl_global_destroy(record->global);
+            delete record;
         }
-        destroy_withdrawn_seats(Clock::time_point::max());
         if (listen_source) wl_event_source_remove(listen_source);
         if (timer) wl_event_source_remove(timer);
         clients.clear();
@@ -542,8 +573,7 @@ struct InputExperiment::Impl {
     }
     bool available() const { return availability().available(); }
     std::string unavailable_refusal() const { return with_unavailable(refusal("session_unavailable"), availability()); }
-    // Per-client bound: each publication is a new global, and a client that
-    // never releases withdrawn seats must not exhaust the lane for others.
+    // Per-client count against kMaxResources (stale generations included).
     template <class Resource>
     static std::size_t client_resources(const std::vector<std::unique_ptr<Resource>>& resources, wl_client* client) {
         return static_cast<std::size_t>(std::ranges::count_if(resources, [&](const auto& r) {
@@ -555,7 +585,9 @@ struct InputExperiment::Impl {
         const auto& record = *static_cast<SeatGlobal*>(data);
         auto& self = *record.owner;
         const auto generation = record.generation;
-        if (client_resources(self.seats, client) >= kMaxResources) { wl_client_post_no_memory(client); return; }
+        if (self.seats.size() >= kMaxLaneResources || client_resources(self.seats, client) >= kMaxResources) {
+            wl_client_post_no_memory(client); return;
+        }
         auto seat = std::make_unique<Seat>();
         seat->generation = generation;
         auto* entry = seat.get();
@@ -578,7 +610,9 @@ struct InputExperiment::Impl {
         self.seats.push_back(std::move(seat));
     }
     void add_pointer(CWlSeat* seat, std::uint32_t id, std::uint64_t generation) {
-        if (client_resources(pointers, seat->client()) >= kMaxResources) { seat->noMemory(); return; }
+        if (pointers.size() >= kMaxLaneResources || client_resources(pointers, seat->client()) >= kMaxResources) {
+            seat->noMemory(); return;
+        }
         auto p = std::make_unique<Pointer>(); auto* entry = p.get();
         p->generation = generation;
         p->wl = makeShared<CWlPointer>(seat->client(), seat->version(), id);
@@ -590,7 +624,8 @@ struct InputExperiment::Impl {
         pointers.push_back(std::move(p));
     }
     void add_keyboard(CWlSeat* seat, std::uint32_t id, std::uint64_t generation) {
-        if (!keyboard_state || client_resources(keyboards, seat->client()) >= kMaxResources) { seat->noMemory(); return; }
+        if (!keyboard_state || keyboards.size() >= kMaxLaneResources ||
+            client_resources(keyboards, seat->client()) >= kMaxResources) { seat->noMemory(); return; }
         auto k = std::make_unique<Keyboard>(); auto* entry = k.get();
         k->generation = generation;
         k->wl = makeShared<CWlKeyboard>(seat->client(), seat->version(), id);
@@ -604,7 +639,9 @@ struct InputExperiment::Impl {
     }
     void add_touch(CWlSeat* seat, std::uint32_t id, std::uint64_t generation) {
         // Never advertised. A valid inert resource is safer than a dangling id.
-        if (client_resources(touches, seat->client()) >= kMaxResources) { seat->noMemory(); return; }
+        if (touches.size() >= kMaxLaneResources || client_resources(touches, seat->client()) >= kMaxResources) {
+            seat->noMemory(); return;
+        }
         auto t = std::make_unique<Touch>(); auto* entry = t.get();
         t->generation = generation;
         t->wl = makeShared<CWlTouch>(seat->client(), seat->version(), id);
@@ -1290,7 +1327,14 @@ struct InputExperiment::Impl {
                 // An admitted isolated-input session claims this lane's seat.
                 // Foreground bindings use the primary seat and publish nothing.
                 if (kSessionSeats && route == InputRoute::independent) {
-                    if (!publish_seat()) { invalidate(c); send(c, refusal("agent_seat_unavailable")); return; }
+                    if (!publish_seat()) {
+                        invalidate(c);
+                        // At the withdrawn-global bound the reason is explicit.
+                        send(c, seat_lifetime.exhausted() ?
+                            refusal("agent_seat_unavailable", std::string_view{"agent_seat_globals_exhausted"}) :
+                            refusal("agent_seat_unavailable"));
+                        return;
+                    }
                     seat_lifetime.touch(Clock::now());
                 }
                 c.foreground_attempted = false;
@@ -1556,7 +1600,6 @@ struct InputExperiment::Impl {
         if (reservation && reservation->dead) reservation = nullptr;
         resume_pending(Clock::now());
         retire_idle_seat(Clock::now());
-        destroy_withdrawn_seats(Clock::now());
         std::erase_if(clients, [](auto& c) { return c->dead; });
         std::erase_if(pointers, [](auto& p) { return p->dead; });
         std::erase_if(keyboards, [](auto& k) { return k->dead; });

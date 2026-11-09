@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -14,13 +16,15 @@ namespace cua::hyprland {
 // Each publication is a new generation. Resources bound to an older
 // generation stay valid but inert: libwayland cannot revoke client-owned
 // objects, and destroying them disconnects clients that later send requests.
-// A withdrawn global stays allocated for `destroy_delay`, so a client that
-// binds it before processing global_remove gets an inert seat rather than a
-// protocol error.
+// A withdrawn global stays allocated until libwayland reports that no more
+// bind requests can arrive for it (every registry that was offered it has
+// acknowledged the removal through wl_fixes or been destroyed). Without that
+// report it stays allocated until plugin teardown. No timeout is treated as
+// proof that a slow client has processed global_remove.
 //
-// This class holds only timing and generation policy. It never creates or
-// destroys Wayland objects; the caller owns `Handle` and destroys the handles
-// that `expired` returns.
+// This class holds only timing, generation and retention policy. It never
+// creates or destroys Wayland objects; the caller owns `Handle` and destroys
+// the handles that `release` accepts or `teardown` returns.
 template <class Handle>
 class AgentSeatLifetime {
   public:
@@ -32,8 +36,11 @@ class AgentSeatLifetime {
     // A claimed lane with no action for this long withdraws its seat. The next
     // admitted action republishes it and waits for the target to bind again.
     static constexpr auto idle_timeout = std::chrono::seconds(20);
-    // Keep a withdrawn global bindable (inertly) for this long.
-    static constexpr auto destroy_delay = std::chrono::seconds(5);
+    // Withdrawn globals a lane retains while it waits for registries to
+    // acknowledge them. At the bound, publication refuses: a client that never
+    // acknowledges removals cannot grow compositor memory without limit, and
+    // the lane never falls back to the user's seat.
+    static constexpr std::size_t max_withdrawn = 1024;
 
     bool published() const { return published_; }
     std::uint64_t generation() const { return generation_; }
@@ -41,14 +48,20 @@ class AgentSeatLifetime {
     std::uint64_t next_generation() const { return generation_ + 1; }
     bool current(std::uint64_t generation) const { return published_ && generation == generation_; }
     const Handle& handle() const { return current_; }
+    // True when no new generation may be published until a withdrawn global
+    // is released.
+    bool exhausted() const { return withdrawn_.size() >= max_withdrawn; }
 
-    // Records a global the caller created for next_generation().
-    void publish(Handle handle, Clock::time_point now) {
-        if (published_) return;
+    // Records a global the caller created for next_generation(). Returns false
+    // and records nothing when a seat is already published or retention is
+    // exhausted; the caller then destroys `handle` itself.
+    bool publish(Handle handle, Clock::time_point now) {
+        if (published_ || exhausted()) return false;
         published_ = true;
         ++generation_;
         current_ = std::move(handle);
         published_at_ = last_use_ = now;
+        return true;
     }
     // Any admission or dispatch keeps a published seat from going idle.
     void touch(Clock::time_point now) {
@@ -59,22 +72,33 @@ class AgentSeatLifetime {
     Clock::time_point bind_deadline() const { return published_at_ + bind_window; }
     bool idle(Clock::time_point now) const { return published_ && now - last_use_ >= idle_timeout; }
 
-    // Stops advertising the current generation. The caller must already have
-    // removed the global from the registry; the handle waits for `expired`.
-    void withdraw(Clock::time_point now) {
-        if (!published_) return;
+    // Stops advertising the current generation and returns its handle, now
+    // retained as withdrawn. Call this BEFORE wl_global_remove: libwayland
+    // reports a global that no registry was offered as withdrawn from inside
+    // wl_global_remove, and `release` must already find it. Returns Handle{}
+    // when nothing is published.
+    Handle withdraw() {
+        if (!published_) return Handle{};
         published_ = false;
-        withdrawn_.push_back({std::move(current_), now + destroy_delay});
-        current_ = Handle{};
+        withdrawn_.push_back(current_);
+        return std::exchange(current_, Handle{});
     }
-    // Returns the withdrawn handles whose destroy delay has passed.
-    std::vector<Handle> expired(Clock::time_point now) {
-        std::vector<Handle> result;
-        std::erase_if(withdrawn_, [&](auto& entry) {
-            if (now < entry.second) return false;
-            result.push_back(std::move(entry.first));
-            return true;
-        });
+    // Forgets a withdrawn handle once libwayland reports that no more binds
+    // can arrive. Returns false for the current or an unknown handle, which
+    // the caller must then not destroy.
+    bool release(const Handle& handle) {
+        const auto found = std::ranges::find(withdrawn_, handle);
+        if (found == withdrawn_.end()) return false;
+        withdrawn_.erase(found);
+        return true;
+    }
+    // Plugin teardown: every handle the lifetime still holds, current and
+    // withdrawn, leaving it unpublished and empty. Generations never repeat.
+    std::vector<Handle> teardown() {
+        std::vector<Handle> result = std::move(withdrawn_);
+        withdrawn_.clear();
+        if (published_) result.push_back(std::exchange(current_, Handle{}));
+        published_ = false;
         return result;
     }
     std::size_t withdrawn() const { return withdrawn_.size(); }
@@ -84,6 +108,6 @@ class AgentSeatLifetime {
     std::uint64_t generation_ = 0;
     Handle current_{};
     Clock::time_point published_at_{}, last_use_{};
-    std::vector<std::pair<Handle, Clock::time_point>> withdrawn_;
+    std::vector<Handle> withdrawn_;
 };
 } // namespace cua::hyprland

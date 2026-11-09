@@ -66,6 +66,7 @@ tests/passive_pointer_target_test.cpp
 tests/plugin_api_test.cpp
 tests/plugin_input_lifetime_test.cpp
 tests/protocol_test.cpp
+tests/seat_global_lifetime_test.py
 tests/seat_lifetime_test.cpp
 tests/seat_session_policy_test.py
 tests/session_availability_test.cpp

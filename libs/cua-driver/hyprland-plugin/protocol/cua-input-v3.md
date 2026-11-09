@@ -57,9 +57,24 @@ last `wl_seat` it sees (GPUI apps such as Zed, imv) stays on the user's input.
   or when the claimed lane has had no admission or action for 20 seconds.
   Withdrawal releases agent focus, sends `wl_seat.capabilities(0)` to that
   generation's seat resources, and removes the global from the registry. The
-  global itself is destroyed five seconds later, so a client that binds it
-  before processing `global_remove` gets an inert seat instead of a protocol
-  error.
+  global itself stays allocated until libwayland reports it withdrawn: every
+  registry that was offered it has acknowledged the removal with
+  `wl_fixes.ack_global_remove` or has been destroyed. Until then a client that
+  binds it before processing `global_remove` gets an inert seat instead of a
+  protocol error. No timeout is treated as proof that a slow client has
+  processed the removal. With a libwayland older than 1.26, which has no
+  withdrawn listener, withdrawn globals stay allocated until the plugin is
+  torn down. Hyprland 0.56.2 does not advertise `wl_fixes`, so there a
+  withdrawn global is released only when no registry saw it or when every
+  registry that saw it is gone (usually when those clients exit).
+- Each lane retains at most 1024 withdrawn globals. At that bound the next
+  session's `TARGET` refuses with
+  `{"ok":false,"code":"agent_seat_unavailable","detail":"agent_seat_globals_exhausted"}`
+  until a withdrawn global is released or the desktop restarts. It never falls
+  back to the user's seat.
+- Seat, pointer, keyboard, and touch resources are bounded at 512 per client
+  and 2048 per lane for each kind, counting resources bound through withdrawn
+  generations. A bind past either bound posts `no_memory` to that client.
 - Each publication is a new generation. Resources bound through an older
   generation stay valid and inert; they never receive input. The next session
   publishes a fresh global.
@@ -201,7 +216,9 @@ include `lane_busy`, `lane_not_claimed`, `stale_target`, `stale_geometry`,
 `client_not_bound`, `agent_seat_unavailable`, `replay`, `unsupported`, and
 `invalid_request`. `client_not_bound` with detail `agent_seat_not_bound` means
 the target did not bind a newly published agent seat within the bounded wait.
-`agent_seat_unavailable` means the compositor could not create the seat global.
+`agent_seat_unavailable` means the compositor could not create the seat global;
+detail `agent_seat_globals_exhausted` means the lane already retains its
+maximum of withdrawn seat globals.
 
 ## Exact-target foreground extension
 
