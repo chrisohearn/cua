@@ -25,6 +25,7 @@ include/cua_hyprland/session.hpp
 include/cua_hyprland/status.hpp
 src/agent_seat_lifetime.hpp
 src/drag_geometry.hpp
+src/external_input.hpp
 src/foreground_route.hpp
 src/inject_server.cpp
 src/inject_server.hpp
@@ -41,6 +42,7 @@ src/primary_trace.hpp
 src/protocol.cpp
 src/seat_lifetime.hpp
 src/session.cpp
+src/session_availability.hpp
 src/status.cpp
 tests/agent_key_repeat_test.py
 tests/agent_seat_lifetime_test.cpp
@@ -49,6 +51,7 @@ tests/cmake-api/include/src/plugins/PluginAPI.hpp
 tests/desktop_fault_policy_fixture.cpp
 tests/desktop_fault_policy_test.py
 tests/drag_geometry_test.cpp
+tests/external_input_test.cpp
 tests/foreground_route_test.cpp
 tests/foreground_modifiers_test.py
 tests/input_grant_test.cpp
@@ -65,6 +68,7 @@ tests/plugin_input_lifetime_test.cpp
 tests/protocol_test.cpp
 tests/seat_lifetime_test.cpp
 tests/seat_session_policy_test.py
+tests/session_availability_test.cpp
 tests/status_test.cpp
 tests/transport_test.cpp
 """.split()
