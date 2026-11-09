@@ -26,14 +26,14 @@ All paths are on the Omarchy workstation, user `cohearn`, `HOME=/home/cohearn`.
 
 | What | Where | Notes |
 | --- | --- | --- |
-| Installed driver | `~/.cua-driver/packages/current` → `releases/0.38.0-main-86e6db7-x86_64-unknown-linux-gnu` | Built from fork commit `86e6db71c`. Previous build kept for rollback: `releases/0.38.0-main-260833c-x86_64-unknown-linux-gnu`. |
+| Installed driver | `~/.cua-driver/packages/current` → `releases/0.38.0-main-6e5a0cd-x86_64-unknown-linux-gnu` | Built from fork commit `6e5a0cd9d` (branch `host/hyprland-seat-lifetime-0.56.2`); `BUILD-PROVENANCE.json` in the slot. Previous build kept for rollback: `releases/0.38.0-main-86e6db7-x86_64-unknown-linux-gnu`. |
 | `cua-driver` on `PATH` | `~/.local/bin/cua-driver` → `~/.cua-driver/packages/current/cua-driver` | Every consumer below resolves the binary through this symlink. |
 | Host daemon | `cua-driver.service` (`~/.config/systemd/user/cua-driver.service`) | `cua-driver serve --permission-mode unrestricted --dangerously-bypass-approvals`, `CUA_DRIVER_RS_ENABLE_WAYLAND=1`. Socket `~/.cache/cua-driver/cua-driver.sock`. Drives Chris's own screen; use it only when he asks. |
 | Agent desktop daemon | `agent-desktop-cua.service`, part of `agent-desktop.target` | `agent-desktop run cua` starts `cua-driver serve --socket $XDG_RUNTIME_DIR/agent-desktop/cua.sock … --no-overlay` on invisible display `:42`. Agents do all browser work here. |
 | Agent desktop product | Repo `Revotech-Networks/agent-desktop`, checkout `~/Developer/Revotech/Projects/agent-desktop`, installed at `~/.local/share/agent-desktop/app/agent-desktop` (`~/.local/bin/agent-desktop`) | Overrides the driver path with `AGENT_DESKTOP_CUA`; defaults to `~/.local/bin/cua-driver`. |
 | MCP clients | Claude Code user MCP server `agent-desktop`; Codex `[mcp_servers.agent_desktop]` in `~/.codex/config.toml` | Both run `cua-driver mcp --socket $XDG_RUNTIME_DIR/agent-desktop/cua.sock`. |
 | Auto-update | `cua-driver-autoupdate.timer` → `~/.local/bin/cua-driver-autoupdate`, log `~/.local/state/cua-driver-autoupdate/autoupdate.log` | Replaces only a slot named exactly `releases/<version>-<target>`. Our `…-main-<sha>-…` slot is logged as `ineligible` and never overwritten. |
-| Hyprland plugin | `~/.config/hypr/cua.lua` loads `~/.local/lib/cua/hyprland/0.34.0-hyprland-0.56.2/cua-hyprland-plugin.so` | Not loaded: the host runs Hyprland 0.57.0 and the module was built for 0.56.2 (`hyprctl plugin list` → `no plugins loaded`). The fix is upstream PR #6253. |
+| Hyprland plugin | `~/.config/hypr/cua.lua` loads `~/.local/lib/cua/hyprland/0.38.0-seat-lifetime-r2-hyprland-0.56.2/cua-hyprland-plugin.so` | Built from the same branch (plugin source unchanged since `1585ab467`) for the host's Hyprland 0.56.2. Loaded, `seat_lifetime` `session`. Previous module kept for rollback: `0.38.0-seat-lifetime-hyprland-0.56.2` (r1). Install the driver and plugin as a pair: `~/.local/libexec/cua-seat-lifetime/activate` (`check`, `driver`, `plugin`, `verify`, `rollback`). |
 
 ## Divergence from upstream
 
@@ -53,7 +53,20 @@ gh pr list -R trycua/cua --author chrisohearn --state open  # our upstream PRs
 Only docs: `FORK.md` and the `<!-- fork:start -->`…`<!-- fork:end -->` block at the end of `AGENTS.md`.
 No product, config or CI file differs from upstream.
 
-### In the installed host build (`host/cua-semantic-throughput-9350d041`, commit `86e6db71c`)
+### In the installed host build (`host/hyprland-seat-lifetime-0.56.2`, commit `6e5a0cd9d`)
+
+Installed 2026-11-09. It is the `86e6db71c` build below plus session-lifetime
+Hyprland agent seats ([trycua/cua#4257](https://github.com/trycua/cua/issues/4257) item 2).
+It supersedes closed fork PR #26 (`e3c0769d1`); that PR targeted `main` by mistake.
+The plugin advertises a lane's `Cua-Agent` `wl_seat` only while an isolated-input
+session uses it, so GPUI apps (Zed, Flea) keep the user's seat when no agent works.
+The driver orders seats by `wl_seat` version when it picks the primary seat.
+Evidence: 210 Rust Wayland tests, 25 plugin unit tests, 628 Python tests; after
+login, one `wl_seat` (`Hyprland`) is visible while idle. Live background-input
+acceptance was skipped: the driver qualifies only libreoffice-fresh 26.2.5-3 and
+inkscape 1.4.4-6, and neither is installed.
+
+### In the previous host build (`host/cua-semantic-throughput-9350d041`, commit `86e6db71c`)
 
 The host branch combines fork main `9ab99152f`, the previous installed
 `host/cua-driver-deep-replies` build (`260833cfc`), and the two contributor-authored
