@@ -14,6 +14,10 @@ Primary events are classified, not removed: continuous primary isolation
 across either transition is UNPROVEN, even if cancellation passes. Only the
 pre-request prefix and separate settled recovery trace use strict isolation.
 No native setup, authentication, product changes, or full-matrix certification.
+Optional fault.min_motion_px adds the held-drag motion gate. Optional
+fault.pointer_cleanup accepts only 'cleared': lock ends the isolated-input
+session, which withdraws the session-lifetime agent seat and clears its
+pointer focus (#4257), so retained_inert hover is rejected.
 Portable tests exercise orchestration and failure oracles, not native behavior.
 """
 import argparse
@@ -41,7 +45,7 @@ from production_realapp_proof import (PRIMARY_LIFETIME_MS, capacity_lane,
     trace_interval)
 from production_session_fault_proof import (connect_trace, lanes, power, production_status,
     validate_fault_options, verify_held_gate)
-from production_desktop_fault_proof import idle_lanes, pointer_cleanup, poll_fault_active, verify_retained_inert
+from production_desktop_fault_proof import idle_lanes, pointer_cleanup, poll_fault_active
 from realapp_proof import cleanup_all, released_synthetic_input
 
 
@@ -90,11 +94,9 @@ def held_status(status, lane):
             assert row.get('reserved') is False, 'unowned lane is reserved'
 
 
-def cancelled_status(before, after, policy='cleared', lane=None):
+def cancelled_status(before, after, policy='cleared'):
     pointer_cleanup({'pointer_cleanup': policy})
-    old, new = lanes(before), lanes(after, cleared=True, allow_passive=policy == 'retained_inert')
-    if policy == 'retained_inert':
-        verify_retained_inert(before, after, lane)
+    old, new = lanes(before), lanes(after, cleared=True)
     assert set(old) == set(new) == {0, 1}
     for lane in old:
         assert old[lane]['epoch'] == new[lane]['epoch'], 'compositor lane replaced'
@@ -156,7 +158,7 @@ class ActiveLockFixture(LockFixture):
         assert 0 <= requested - status_started <= 250_000_000, 'stale held-input status'
         assert 0 <= requested - self.record['ready']['observed_ns'] < 2_500_000_000, 'fixture ready window expired'
         self.record['requested_ns'] = requested
-        if motion is not None or pointer_cleanup(self.config) == 'retained_inert':
+        if motion is not None:
             verify_held_gate(self.record)
         self.deadline_ns = requested + LOCK_MS * 1_000_000
         self.record['deadline_ns'] = self.deadline_ns
@@ -166,7 +168,7 @@ class ActiveLockFixture(LockFixture):
         self.record['ack'] = self.event('locked')
         assert requested <= self.record['ack']['observed_ns'] < self.deadline_ns
         self.record.update(after=production_status(self.config), observed_ns=time.monotonic_ns())
-        cancelled_status(gate, self.record['after'], pointer_cleanup(self.config), lane)
+        cancelled_status(gate, self.record['after'], pointer_cleanup(self.config))
         self.locked()
         self.record['result'] = 'acknowledged'
         return lane
@@ -203,7 +205,7 @@ def transition_evidence(page, *, stopped=False):
 def verify_cancelled(boundary, record, action):
     assert record['result'] == 'acknowledged'
     policy = pointer_cleanup(record)
-    if policy == 'retained_inert' or 'min_motion_px' in record:
+    if 'min_motion_px' in record:
         verify_held_gate(record)
     prefix, lane = record['prefix'], record['lane']
     assert set(active_drags(prefix)) == {lane}
@@ -229,13 +231,11 @@ def verify_cancelled(boundary, record, action):
                           'pointer_motion', 'pointer_enter') for row in synthetic), 'extra action or false completion'
     assert not any(row[2] in ('pointer_motion', 'pointer_enter') and row[0] > cancel[0]
                    for row in synthetic), 'input continued after cancellation'
-    if policy == 'retained_inert':
-        assert not any(row[2] in ('pointer_enter', 'pointer_leave') for row in synthetic), 'retained pointer left or retargeted'
     releases = [row for row in synthetic if row[2] == 'pointer_button']
     assert len(releases) == 1 and releases[0][6] == 0 and releases[0][0] > cancel[0], 'missing own-seat release'
     assert releases[0][1] <= record['observed_ns'] < deadline, 'release was not observed before cleared lock status'
     released_synthetic_input(boundary)
-    cancelled_status(record['gate_status'], record['after'], policy, lane)
+    cancelled_status(record['gate_status'], record['after'], policy)
     # A transport-unknown response cannot establish the production reason.
     assert action['outcome'] == 'response' and action['replayed'] is False, 'unknown drag outcome; no replay'
     check_response(action['response'], {'kind': 'partial'})
@@ -402,7 +402,7 @@ def run(args):
         fixture.check_targets()
         final = production_status(fixture.config)
         save('final-status.json', final)
-        old = lanes(restoration['after'], cleared=True, allow_passive=policy == 'retained_inert')
+        old = lanes(restoration['after'], cleared=True)
         new = lanes(final, cleared=True, allow_passive=True)
         assert set(old) == set(new) == {0, 1}
         assert sum(new[k]['dispatches'] - old[k]['dispatches'] for k in old) == 1

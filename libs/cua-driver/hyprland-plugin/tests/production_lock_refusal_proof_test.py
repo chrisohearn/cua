@@ -514,85 +514,85 @@ class FixtureTests(unittest.TestCase):
         fixture.child.stdout.readline.assert_not_called()
 
 
-class RetainedPointerTests(unittest.TestCase):
+RETIRED = 'retained_inert retired: session-lifetime agent seats withdraw on desktop transitions'
+
+
+class PointerCleanupPolicyTests(unittest.TestCase):
+    """Lock ends the session and withdraws the agent seat (#4257): only 'cleared' certifies."""
+
     def test_settled_lock_accepts_only_cleanup_option_not_a_motion_claim(self):
         value = plan()
-        value['fault']['pointer_cleanup'] = 'retained_inert'
+        value['fault']['pointer_cleanup'] = 'cleared'
         proof.validate_plan(value)
-        for change in ({'pointer_cleanup': 'unknown'}, {'min_motion_px': 12}, {'kill_to_unlock': True}):
+        for change, error in (({'pointer_cleanup': 'unknown'}, 'unknown pointer cleanup policy'),
+                              ({'pointer_cleanup': 'retained_inert'}, RETIRED),
+                              ({'min_motion_px': 12}, 'unsupported fault option'),
+                              ({'kill_to_unlock': True}, 'unsupported fault option')):
             bad = deepcopy(value)
             bad['fault'].update(change)
-            with self.subTest(change=change), self.assertRaises(AssertionError):
+            with self.subTest(change=change), self.assertRaisesRegex(AssertionError, error):
                 proof.validate_plan(bad)
 
-    def test_stable_refusal_and_restoration_preserve_both_lane_presence(self):
-        for lane in (1, 2):
-            before, after = retained_status(1, lane), retained_status(2, lane)
+    def test_stable_refusal_and_restoration_require_cleared_lanes(self):
+        before, after = status(1), status(2)
+        proof.stable_status(before, after, advanced=True)
+        proof.stable_status(after, deepcopy(after))
+        with self.assertRaisesRegex(AssertionError, RETIRED):
             proof.stable_status(before, after, advanced=True, policy='retained_inert')
-            proof.stable_status(after, deepcopy(after), policy='retained_inert')
-            with self.assertRaises(AssertionError):
-                proof.stable_status(before, after, advanced=True)
-            for index, key, value in ((lane - 1, 'pointer_focus', False), (2 - lane, 'pointer_focus', True),
-                                     (lane - 1, 'reserved', True), (lane - 1, 'held_button', 272),
-                                     (lane - 1, 'held_keys', 1), (lane - 1, 'drag_active', True),
-                                     (lane - 1, 'lease_active', True), (lane - 1, 'keyboard_focus', True),
-                                     (lane - 1, 'dispatches', 1), (lane - 1, 'epoch', 'different'),
-                                     (lane - 1, 'desktop_generation', 1)):
+        for lane in (1, 2):
+            # Leftover focus on either lane is what the retired policy expected; it now fails.
+            with self.subTest(lane=lane), self.assertRaises(AssertionError):
+                proof.stable_status(before, retained_status(2, lane), advanced=True)
+            for key, value in (('reserved', True), ('held_button', 272), ('held_keys', 1),
+                               ('drag_active', True), ('lease_active', True), ('keyboard_focus', True),
+                               ('dispatches', 1), ('epoch', 'different'), ('desktop_generation', 1)):
                 bad = deepcopy(after)
-                bad['input']['lanes'][index][key] = value
+                bad['input']['lanes'][lane - 1][key] = value
                 with self.subTest(lane=lane, key=key), self.assertRaises(AssertionError):
-                    proof.stable_status(before, bad, advanced=True, policy='retained_inert')
+                    proof.stable_status(before, bad, advanced=True)
             bad_before = deepcopy(before)
             bad_before['input']['lanes'][lane - 1]['reserved'] = True
-            with self.assertRaises(AssertionError):
-                proof.stable_status(bad_before, after, advanced=True, policy='retained_inert')
+            with self.subTest(lane=lane), self.assertRaises(AssertionError):
+                proof.stable_status(bad_before, after, advanced=True)
 
-    def test_refusal_does_not_own_input_or_dispatch_with_retained_hover(self):
+    def test_refusal_does_not_own_input_or_dispatch_and_rejects_retired_policy(self):
         value = refusal()
-        value.update(pointer_cleanup='retained_inert', before=retained_status(), after=retained_status())
+        value['pointer_cleanup'] = 'cleared'
         self.assertEqual(proof.verify_refusal(value)['result'], 'verified')
-        for side, key, change in (('before', 'reserved', True), ('after', 'pointer_focus', False),
+        for side, key, change in (('before', 'reserved', True), ('after', 'pointer_focus', True),
                                    ('after', 'dispatches', 1), ('after', 'held_keys', 1)):
             bad = deepcopy(value)
             bad[side]['input']['lanes'][0][key] = change
             with self.subTest(side=side, key=key), self.assertRaises(AssertionError):
                 proof.verify_refusal(bad)
-
-    def test_unlock_continuity_keeps_raw_primary_failure_and_rejects_synthetic_activity(self):
-        initial = trace([(0, 'start', 0, 0)])
-        stopped = proof.stopped_prefix(trace([(0, 'start', 0, 0), (1, 'keyboard_focus', 0, 0)]))
-        result = proof.verify_inert_transition(initial, stopped)
-        self.assertEqual(result['continuous_primary_isolation'], 'unproven')
-        self.assertEqual(result['raw_primary_analysis'], proof.analyze(stopped))
-        self.assertNotEqual(result['raw_primary_analysis']['result'], 'passed')
-        for kind in ('pointer_leave', 'pointer_enter', 'pointer_motion', 'agent_admitted', 'pointer_button'):
-            bad = proof.stopped_prefix(trace([(0, 'start', 0, 0), (1, kind, 1, 0)]))
-            with self.subTest(kind=kind), self.assertRaises(AssertionError):
-                proof.verify_inert_transition(initial, bad)
-        bad = deepcopy(stopped)
-        bad['overflow'] = True
-        with self.assertRaises(AssertionError):
-            proof.verify_inert_transition(initial, bad)
+        value['pointer_cleanup'] = 'retained_inert'
+        with self.assertRaisesRegex(AssertionError, RETIRED):
+            proof.verify_refusal(value)
 
     def test_shared_settling_and_graceful_restore_thread_policy_without_deadline_change(self):
-        settling = Mock(config={'pointer_cleanup': 'retained_inert'}, record={'after': retained_status()})
         def sample_twice(fn, timeout):
             self.assertEqual(timeout, 2)
             self.assertIsNone(fn())
             return fn()
-        with patch.object(proof, 'wm', return_value={}), \
-             patch.object(proof, 'production_status', return_value=retained_status()), \
-             patch.object(proof.time, 'monotonic_ns', side_effect=[1, 100_000_001]), \
-             patch.object(proof, 'wait_for', side_effect=sample_twice):
-            self.assertEqual(proof.settle_locked(settling)['status'], retained_status())
+        for policy in ('cleared', 'retained_inert'):
+            settling = Mock(config={'pointer_cleanup': policy}, record={'after': status(2)})
+            with self.subTest(policy=policy), patch.object(proof, 'wm', return_value={}), \
+                 patch.object(proof, 'production_status', return_value=status(2)), \
+                 patch.object(proof.time, 'monotonic_ns', side_effect=[1, 100_000_001]), \
+                 patch.object(proof, 'wait_for', side_effect=sample_twice):
+                if policy == 'cleared':
+                    self.assertEqual(proof.settle_locked(settling)['status'], status(2))
+                else:
+                    with self.assertRaisesRegex(AssertionError, RETIRED):
+                        proof.settle_locked(settling)
         fixture = locked_fixture()
-        fixture.config['pointer_cleanup'] = 'retained_inert'
-        fixture.record['after'] = retained_status(2)
+        fixture.config['pointer_cleanup'] = 'cleared'
+        fixture.record['after'] = status(2)
         fixture.events = [{'event': 'locked', 'observed_ns': 2}]
         fixture.read_event = Mock(return_value={'event': 'unlocked', 'observed_ns': 4})
         fixture.child.wait.return_value = 0
         with patch.object(proof, 'guard_guest'), \
-             patch.object(proof, 'production_status', return_value=retained_status(3)), \
+             patch.object(proof, 'production_status', return_value=status(3)), \
              patch.object(proof, 'wait_for', side_effect=lambda fn, timeout: fn()), \
              patch.object(proof.time, 'monotonic_ns', return_value=3):
             # Model the event reader's append as in the real helper.
