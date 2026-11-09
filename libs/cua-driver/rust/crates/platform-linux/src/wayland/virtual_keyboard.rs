@@ -57,7 +57,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
         } = event
         {
             if interface == WlSeat::interface().name {
-                state.seats.add(registry.bind(name, version.min(7), qh, ()));
+                let version = version.min(7);
+                state
+                    .seats
+                    .add(registry.bind(name, version, qh, ()), version);
             } else if interface == ZwpVirtualKeyboardManagerV1::interface().name {
                 state.manager = Some(registry.bind(name, version.min(1), qh, ()));
             }

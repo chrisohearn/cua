@@ -3,12 +3,20 @@
 //!
 //! The Hyprland plugin advertises an agent seat only while an isolated-input
 //! session uses it (#4257), so one can appear between enumeration roundtrips
-//! and still be unnamed when a seat is chosen. A named ordinary seat therefore
-//! wins over any unnamed seat; unnamed seats are chosen only when no seat has
-//! announced an ordinary name (pre-v2 `wl_seat`).
+//! and still be unnamed when a seat is chosen. Only a seat bound at version 2 or
+//! later can announce a name, so an unnamed modern seat may simply be waiting
+//! for its name event and ranks below every ordinary candidate. A pre-v2 seat
+//! can never be named; it stays an ordinary candidate, so the last-advertised
+//! choice among named ordinary and pre-v2 seats is unchanged.
 
 pub(super) struct Seats<T> {
-    entries: Vec<(T, Option<String>)>,
+    entries: Vec<Entry<T>>,
+}
+
+struct Entry<T> {
+    seat: T,
+    version: u32,
+    name: Option<String>,
 }
 
 impl<T> Default for Seats<T> {
@@ -20,13 +28,18 @@ impl<T> Default for Seats<T> {
 }
 
 impl<T: Clone + PartialEq> Seats<T> {
-    pub(super) fn add(&mut self, seat: T) {
-        self.entries.push((seat, None));
+    /// `version` is the bound `wl_seat` version; `wl_seat.name` exists since v2.
+    pub(super) fn add(&mut self, seat: T, version: u32) {
+        self.entries.push(Entry {
+            seat,
+            version,
+            name: None,
+        });
     }
 
     pub(super) fn name(&mut self, seat: &T, name: String) {
-        if let Some(entry) = self.entries.iter_mut().find(|entry| &entry.0 == seat) {
-            entry.1 = Some(name);
+        if let Some(entry) = self.entries.iter_mut().find(|entry| &entry.seat == seat) {
+            entry.name = Some(name);
         }
     }
 
@@ -37,12 +50,15 @@ impl<T: Clone + PartialEq> Seats<T> {
                 || name == "Cua-Agent"
                 || name == "Cua-Agent-2"
         };
-        let ordinary = self.entries.iter().rev();
-        ordinary
+        let latest_first = self.entries.iter().rev();
+        latest_first
             .clone()
-            .find(|entry| entry.1.as_deref().is_some_and(|name| !agent(name)))
-            .or_else(|| ordinary.clone().find(|entry| entry.1.is_none()))
-            .map(|entry| entry.0.clone())
+            .find(|entry| match entry.name.as_deref() {
+                Some(name) => !agent(name),
+                None => entry.version < 2,
+            })
+            .or_else(|| latest_first.clone().find(|entry| entry.name.is_none()))
+            .map(|entry| entry.seat.clone())
     }
 }
 
@@ -55,7 +71,7 @@ mod tests {
         for order in [[1, 2], [2, 1]] {
             let mut seats = Seats::default();
             for seat in order {
-                seats.add(seat);
+                seats.add(seat, 9);
             }
             seats.name(&1, "seat0".into());
             seats.name(&2, "Cua-Test-Agent".into());
@@ -66,14 +82,14 @@ mod tests {
     #[test]
     fn no_primary_seat_refuses_and_legacy_selection_is_preserved() {
         let mut seats = Seats::default();
-        seats.add(2);
+        seats.add(2, 9);
         seats.name(&2, "Cua-Test-Agent".into());
         assert_eq!(seats.selected(), None);
-        seats.add(4);
+        seats.add(4, 9);
         seats.name(&4, "Cua-Test-Agent-2".into());
         assert_eq!(seats.selected(), None);
-        seats.add(1);
-        seats.add(3);
+        seats.add(1, 1);
+        seats.add(3, 1);
         assert_eq!(seats.selected(), Some(3));
     }
 
@@ -82,13 +98,13 @@ mod tests {
         // A session-lifetime agent seat can arrive after the user's seat was
         // named and before its own name event is dispatched.
         let mut seats = Seats::default();
-        seats.add(1);
+        seats.add(1, 9);
         seats.name(&1, "Hyprland".into());
-        seats.add(2);
+        seats.add(2, 9);
         assert_eq!(seats.selected(), Some(1));
         seats.name(&2, "Cua-Agent".into());
         assert_eq!(seats.selected(), Some(1));
-        seats.add(3);
+        seats.add(3, 9);
         assert_eq!(seats.selected(), Some(1));
     }
 
@@ -96,9 +112,23 @@ mod tests {
     fn production_seats_never_replace_the_primary_seat() {
         let mut seats = Seats::default();
         for (id, name) in [(1, "seat0"), (2, "Cua-Agent"), (3, "Cua-Agent-2")] {
-            seats.add(id);
+            seats.add(id, 9);
             seats.name(&id, name.into());
         }
         assert_eq!(seats.selected(), Some(1));
+    }
+
+    #[test]
+    fn later_pre_v2_seat_keeps_last_advertised_precedence_over_named_seat() {
+        // A v1 wl_seat can never send wl_seat.name, so it is an ordinary
+        // candidate and the legacy last-advertised choice still applies.
+        let mut seats = Seats::default();
+        seats.add(1, 9);
+        seats.name(&1, "seat0".into());
+        seats.add(2, 1);
+        assert_eq!(seats.selected(), Some(2));
+        // An unnamed modern seat, by contrast, may still be an agent seat.
+        seats.add(3, 9);
+        assert_eq!(seats.selected(), Some(2));
     }
 }
