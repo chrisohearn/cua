@@ -169,9 +169,4 @@ distribution code explicitly uses one.
 This is `chrisohearn/cua`, a fork of `trycua/cua`. It is the head repository for our upstream PRs and the source of the Cua Driver build behind this Omarchy host's daemon and agent desktop.
 Read [`FORK.md`](FORK.md) before working here: it covers what differs from upstream, how to build, install and verify our build, and how to sync.
 
-## Ownership
-
-This codebase is yours: what it's for and how it's built are your call, and you'll keep building on it.
-Exercise this ownership within established authorization, preserving more-specific user decisions, product boundaries, and required source, review, release, and safety controls.
-
 <!-- fork:end -->
