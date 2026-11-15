@@ -347,8 +347,7 @@ fn is_semantic_document_timeout_error(error: &anyhow::Error) -> bool {
     message.contains("cdp dom.getdocument timed out after")
 }
 
-const SEMANTIC_DOM_FALLBACK_DEPTHS: &[i64] = &[256, 128, 64, 32, 16, 8, 4, 2, 1];
-const SEMANTIC_DOM_TIMEOUT_FALLBACK_DEPTHS: &[i64] = &[8, 4, 2, 1];
+const SEMANTIC_DOM_FALLBACK_DEPTH: i64 = 8;
 const SEMANTIC_DOM_HYDRATION_DEPTH: i64 = 8;
 const MAX_SEMANTIC_DOM_HYDRATION_CALLS: usize = 64;
 const MAX_SEMANTIC_DOM_SCAN_NODES: usize = 50_000;
@@ -2529,39 +2528,28 @@ impl BrowserEngine {
         {
             Ok(document) => Ok((document, true)),
             Err(error) if is_semantic_document_fallback_error(&error) => {
-                let mut last_size_error = error.to_string();
-                let fallback_depths = if is_semantic_document_timeout_error(&error) {
-                    SEMANTIC_DOM_TIMEOUT_FALLBACK_DEPTHS
-                } else {
-                    SEMANTIC_DOM_FALLBACK_DEPTHS
-                };
-                for depth in fallback_depths {
-                    match conn
-                        .call(
-                            Some(cdp_session),
-                            "DOM.getDocument",
-                            json!({ "depth": depth, "pierce": true }),
-                        )
-                        .await
-                    {
-                        Ok(document) => {
-                            let document = self
-                                .hydrate_semantic_document(conn, cdp_session, document)
-                                .await?;
-                            return Ok((document, false));
-                        }
-                        Err(error) if is_semantic_document_fallback_error(&error) => {
-                            last_size_error = error.to_string();
-                        }
-                        Err(error) => {
-                            return Err(route_err("bounded DOM.getDocument fallback failed", error))
-                        }
+                // One bounded read-only fallback. A second failure of any kind ends the
+                // read: an unresponsive page would make every shallower request wait out
+                // the same call deadline, so at most two DOM.getDocument requests are made.
+                match conn
+                    .call(
+                        Some(cdp_session),
+                        "DOM.getDocument",
+                        json!({ "depth": SEMANTIC_DOM_FALLBACK_DEPTH, "pierce": true }),
+                    )
+                    .await
+                {
+                    Ok(document) => {
+                        let document = self
+                            .hydrate_semantic_document(conn, cdp_session, document)
+                            .await?;
+                        Ok((document, false))
                     }
+                    Err(fallback) => Err(route_err(
+                        "bounded DOM.getDocument fallback failed",
+                        format!("{fallback} (after full-depth: {error})"),
+                    )),
                 }
-                Err(route_err(
-                    "bounded DOM.getDocument fallback exhausted every accepted depth",
-                    last_size_error,
-                ))
             }
             Err(error) => Err(route_err("DOM.getDocument failed", error)),
         }

@@ -20,7 +20,22 @@ struct Probe {
     def: ToolDef,
     calls: Arc<Mutex<Vec<Value>>>,
     pacings: Arc<Mutex<Vec<(String, crate::step_pacing::StepPacing)>>>,
+    gate: Arc<Gate>,
 }
+
+/// Holds a `{"hold": true}` call inside the probe, with its text input admission
+/// still taken, until the test releases it.
+#[derive(Default)]
+struct Gate {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+// Text input is admitted per pid for the whole test process (`tool.rs`), and
+// tests run in parallel, so each fixture that types uses its own pid.
+const PACED_TEXT_PID: i64 = 8_675_421;
+const ORDERED_TEXT_PID: i64 = 8_675_422;
+const OBSERVED_TEXT_PID: i64 = 8_675_423;
 
 #[async_trait]
 impl Tool for Probe {
@@ -28,8 +43,16 @@ impl Tool for Probe {
         &self.def
     }
 
+    fn has_independent_input_lane(&self, args: &Value) -> bool {
+        args["probe_independent_lane"] == true
+    }
+
     async fn invoke(&self, args: Value) -> ToolResult {
         self.calls.lock().unwrap().push(args.clone());
+        if args["hold"] == true {
+            self.gate.entered.notify_one();
+            self.gate.release.notified().await;
+        }
         self.pacings
             .lock()
             .unwrap()
@@ -49,6 +72,7 @@ struct Harness {
     registry: Arc<ToolRegistry>,
     calls: std::collections::HashMap<&'static str, Arc<Mutex<Vec<Value>>>>,
     pacings: Arc<Mutex<Vec<(String, crate::step_pacing::StepPacing)>>>,
+    gate: Arc<Gate>,
 }
 
 impl Harness {
@@ -56,6 +80,7 @@ impl Harness {
         let mut registry = ToolRegistry::new();
         let mut calls = std::collections::HashMap::new();
         let pacings: Arc<Mutex<Vec<(String, crate::step_pacing::StepPacing)>>> = Arc::default();
+        let gate: Arc<Gate> = Arc::default();
         for name in super::BATCHABLE_TOOLS.iter().copied().chain([
             "get_window_state",
             "zoom",
@@ -74,6 +99,8 @@ impl Harness {
                             "window_id": {"type": "integer"},
                             "text": {"type": "string"},
                             "fail": {"type": "boolean"},
+                            "hold": {"type": "boolean"},
+                            "probe_independent_lane": {"type": "boolean"},
                             "fail_message": {"type": "string"},
                             "element_token": {"type": "string"},
                             "value": {"type": "string"},
@@ -106,6 +133,7 @@ impl Harness {
                 },
                 calls: log,
                 pacings: pacings.clone(),
+                gate: gate.clone(),
             }));
         }
         registry.register_session_tools();
@@ -115,6 +143,7 @@ impl Harness {
             registry,
             calls,
             pacings,
+            gate,
         }
     }
 
@@ -179,9 +208,9 @@ async fn every_step_but_the_last_is_paced_as_a_batched_step() {
     let harness = Harness::new();
     let result = harness
         .run(json!({"steps": [
-            {"tool": "click", "args": {"pid": 42, "window_id": 7}},
-            {"tool": "type_text", "args": {"pid": 42, "text": "b"}},
-            {"tool": "press_key", "args": {"pid": 42}},
+            {"tool": "click", "args": {"pid": PACED_TEXT_PID, "window_id": 7}},
+            {"tool": "type_text", "args": {"pid": PACED_TEXT_PID, "text": "b"}},
+            {"tool": "press_key", "args": {"pid": PACED_TEXT_PID}},
         ]}))
         .await;
     assert_ne!(result.is_error, Some(true), "{}", text(&result));
@@ -221,9 +250,9 @@ async fn runs_steps_in_order_and_reports_each() {
     let harness = Harness::new();
     let result = harness
         .run(json!({"steps": [
-            {"tool": "set_value", "args": {"pid": 42, "window_id": 7, "text": "a"}},
-            {"tool": "type_text", "args": {"pid": 42, "text": "b"}},
-            {"tool": "press_key", "args": {"pid": 42}},
+            {"tool": "set_value", "args": {"pid": ORDERED_TEXT_PID, "window_id": 7, "text": "a"}},
+            {"tool": "type_text", "args": {"pid": ORDERED_TEXT_PID, "text": "b"}},
+            {"tool": "press_key", "args": {"pid": ORDERED_TEXT_PID}},
         ]}))
         .await;
     assert_ne!(result.is_error, Some(true), "{}", text(&result));
@@ -346,15 +375,15 @@ async fn observation_inherits_the_window_and_stays_bounded() {
     let result = harness
         .run(json!({
             "steps": [
-                {"tool": "click", "args": {"pid": 42, "window_id": 7}},
-                {"tool": "type_text", "args": {"pid": 42, "text": "x"}},
+                {"tool": "click", "args": {"pid": OBSERVED_TEXT_PID, "window_id": 7}},
+                {"tool": "type_text", "args": {"pid": OBSERVED_TEXT_PID, "text": "x"}},
             ],
             "observe": {}
         }))
         .await;
     assert_ne!(result.is_error, Some(true), "{}", text(&result));
     let observed = harness.last("get_window_state");
-    assert_eq!(observed["pid"], 42);
+    assert_eq!(observed["pid"], OBSERVED_TEXT_PID);
     assert_eq!(observed["window_id"], 7);
     assert_eq!(observed["include_screenshot"], false);
     assert_eq!(
@@ -786,4 +815,55 @@ async fn non_scalar_set_value_is_rejected_before_any_batch_action() {
             .starts_with("set_value: invalid arguments at /value:"));
         assert_eq!(harness.hits("set_value"), 0);
     }
+}
+
+/// A held text input refuses another batch typing into the same pid, while a
+/// batch typing into a different pid runs to completion during the overlap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_text_input_refuses_only_batches_for_the_same_pid() {
+    const HELD_PID: i64 = 8_675_424;
+    const OTHER_PID: i64 = 8_675_425;
+    let bound = Duration::from_secs(10);
+    let harness = Arc::new(Harness::new());
+    let typing = |pid: i64, extra: Value| {
+        let mut args =
+            json!({"pid": pid, "window_id": 7, "text": "a", "probe_independent_lane": true});
+        args.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        json!({"steps": [{"tool": "type_text", "args": args}]})
+    };
+    let held = tokio::spawn({
+        let harness = harness.clone();
+        let args = typing(HELD_PID, json!({"hold": true}));
+        async move { harness.run(args).await }
+    });
+    tokio::time::timeout(bound, harness.gate.entered.notified())
+        .await
+        .expect("the held type_text reached the probe");
+
+    let same = tokio::time::timeout(bound, harness.run(typing(HELD_PID, json!({}))))
+        .await
+        .expect("a same-pid batch fails fast");
+    assert_eq!(same.is_error, Some(true), "{}", text(&same));
+    assert!(
+        text(&same).contains(&format!("text input is already active for pid {HELD_PID}")),
+        "{}",
+        text(&same)
+    );
+    let other = tokio::time::timeout(bound, harness.run(typing(OTHER_PID, json!({}))))
+        .await
+        .expect("a different-pid batch is not held behind the first");
+    assert_ne!(other.is_error, Some(true), "{}", text(&other));
+    assert!(
+        !held.is_finished(),
+        "the overlap must still hold the first pid"
+    );
+
+    harness.gate.release.notify_one();
+    let held = tokio::time::timeout(bound, held)
+        .await
+        .expect("released")
+        .unwrap();
+    assert_ne!(held.is_error, Some(true), "{}", text(&held));
 }
