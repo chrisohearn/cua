@@ -185,7 +185,18 @@ mod tests {
     fn fake_pacman(root: &std::path::Path, script: &str) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let path = root.join("pacman");
-        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        // A child process creates the executable: a file this multithreaded
+        // test process opened for writing can be held open by a sibling test's
+        // fork until its exec, so exec'ing it fails with ETXTBSY ("Text file
+        // busy") and the query reads as unowned.
+        let staging = root.join("pacman.src");
+        std::fs::write(&staging, format!("#!/bin/sh\n{script}\n")).unwrap();
+        let status = std::process::Command::new("cp")
+            .arg(&staging)
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "cp {staging:?} {path:?}");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
     }

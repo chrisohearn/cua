@@ -217,7 +217,8 @@ def run_metadata() -> dict:
     }
     event_path = os.environ.get("GITHUB_EVENT_PATH")
     if event_path and Path(event_path).is_file():
-        pr = json.loads(Path(event_path).read_text()).get("pull_request")
+        # The event payload is UTF-8 JSON; Windows runners default to cp1252.
+        pr = json.loads(Path(event_path).read_text(encoding="utf-8")).get("pull_request")
         if pr:
             meta["pr"] = pr.get("number")
             meta["sha"] = pr.get("head", {}).get("sha", meta["sha"])

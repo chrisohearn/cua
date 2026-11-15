@@ -10,6 +10,15 @@ FAILURES=0
 pass() { printf '[ready] %s\n' "$1"; }
 warn() { printf '[optional] %s\n' "$1"; }
 fail() { printf '[missing] %s\n' "$1" >&2; FAILURES=$((FAILURES + 1)); }
+# Failure-only context, bounded so a runaway binary cannot flood the log.
+detail() {
+  local line count=0
+  [[ -n "$2" ]] || return 0
+  while IFS= read -r line && ((count < 20)); do
+    printf '[missing]   %s: %s\n' "$1" "${line:0:300}" >&2
+    count=$((count + 1))
+  done <<<"$2"
+}
 
 if [[ "$(uname -s)" != Linux ]]; then
   fail 'Linux host required'
@@ -83,7 +92,9 @@ else
   fail 'checked-out source SHA unavailable (set CUA_E2E_SOURCE_SHA when running without a checkout)'
 fi
 if [[ -x "${DRIVER_BIN}" ]]; then
-  if version="$("${DRIVER_BIN}" --version 2>&1)"; then
+  version_status=0
+  version="$("${DRIVER_BIN}" --version 2>&1)" || version_status=$?
+  if ((version_status == 0)); then
     pass "driver version: ${version} (${DRIVER_BIN})"
     # Source identity: the git sha the driver embedded at build time.
     driver_sha=""
@@ -98,7 +109,11 @@ if [[ -x "${DRIVER_BIN}" ]]; then
       fail "stale driver: built from ${driver_sha}, source under test is ${source_sha:-unknown}"
     fi
   else
-    fail "source driver cannot run --version: ${DRIVER_BIN}"
+    fail "source driver cannot run --version: ${DRIVER_BIN} (exit ${version_status})"
+    detail 'version output' "${version:-<none>}"
+    if command -v ldd >/dev/null 2>&1; then
+      detail 'ldd' "$(ldd "${DRIVER_BIN}" 2>&1 | grep -E 'not found|not a dynamic|No such file|version .* not found' || true)"
+    fi
   fi
 else
   warn "source driver not built: ${DRIVER_BIN}"
